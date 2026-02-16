@@ -1,14 +1,14 @@
 import os
+import re
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from datetime import date, datetime, timedelta
 
 import pandas as pd
-import mysql.connector
 from mysql.connector import pooling
 
-# Kalender widget
-from tkcalendar import DateEntry
+import calendar
+
 
 
 # =========================
@@ -32,28 +32,55 @@ def get_conn():
     return POOL.get_connection()
 
 
-def extract_second_part(variant: str) -> str:
+def extract_variant_parts(variant: str) -> list[str]:
     if pd.isna(variant):
-        return ""
+        return []
     s = str(variant).strip()
-
     for sep in ["·", "•", "|"]:
         if sep in s:
-            parts = [p.strip() for p in s.split(sep)]
-            return parts[1] if len(parts) >= 2 else parts[0]
-
+            return [p.strip() for p in s.split(sep) if p.strip()]
     if " - " in s:
-        parts = [p.strip() for p in s.split(" - ")]
-        return parts[1] if len(parts) >= 2 else parts[0]
-
-    return s
+        return [p.strip() for p in s.split(" - ") if p.strip()]
+    return [s] if s else []
 
 
-def parse_date_yyyy_mm_dd(s: str) -> date | None:
-    try:
-        return datetime.strptime(s.strip(), "%Y-%m-%d").date()
-    except Exception:
-        return None
+ZAAL_RE = re.compile(r"\bzaal\s*\d+\b", re.IGNORECASE)
+
+
+def detect_film_and_zaal(variant: str) -> tuple[str, str]:
+    """
+    Detecteert film + zaal uit Naam van variant.
+
+    Regels:
+    - bevat 'zaal beneden'  -> zaal = '1'
+    - bevat 'zaal boven'    -> zaal = '2'
+    - film = tweede onderdeel indien aanwezig
+    """
+
+    if pd.isna(variant):
+        return "", ""
+
+    s = str(variant).strip().lower()
+
+    # Zaal mapping
+    if "zaal beneden" in s:
+        zaal = "1"
+    elif "zaal boven" in s:
+        zaal = "2"
+    else:
+        zaal = ""
+
+    # Film extractie (zoals je eerder deed: tweede deel)
+    parts = extract_variant_parts(variant)
+    if len(parts) >= 2:
+        film = parts[1]
+    elif parts:
+        film = parts[0]
+    else:
+        film = ""
+
+    return film.strip(), zaal
+
 
 
 WEEKDAY_LABELS = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
@@ -62,7 +89,7 @@ WEEKDAY_TO_LABEL = {i: lbl for i, lbl in enumerate(WEEKDAY_LABELS)}
 
 
 # =========================
-# DB functies
+# DB functions
 # =========================
 def db_get_setting(key: str) -> str | None:
     conn = get_conn()
@@ -96,7 +123,7 @@ def db_get_week_start_weekday() -> int:
     """
     v = db_get_setting("week_start_weekday")
     if v is None:
-        db_set_setting("week_start_weekday", "1")  # dinsdag
+        db_set_setting("week_start_weekday", "1")
         return 1
     try:
         n = int(v)
@@ -109,10 +136,6 @@ def db_get_week_start_weekday() -> int:
 
 
 def speelweek_range(d: date, week_start_weekday: int) -> tuple[date, date]:
-    """
-    Speelweek: start op instelbare week_start_weekday, eind = start + 7 dagen.
-    week_start_weekday: 0=ma ... 6=zo
-    """
     weekday = d.weekday()
     days_since_start = (weekday - week_start_weekday) % 7
     start = d - timedelta(days=days_since_start)
@@ -121,16 +144,12 @@ def speelweek_range(d: date, week_start_weekday: int) -> tuple[date, date]:
 
 
 def db_get_or_create_speelweek(d: date) -> tuple[int, int]:
-    """
-    Returns (speelweek_id, weeknummer)
-    """
     week_start = db_get_week_start_weekday()
     start, end = speelweek_range(d, week_start)
 
     conn = get_conn()
     try:
         cur = conn.cursor()
-
         cur.execute(
             "SELECT id, weeknummer FROM speelweek WHERE start_datum=%s AND eind_datum=%s",
             (start, end),
@@ -139,7 +158,6 @@ def db_get_or_create_speelweek(d: date) -> tuple[int, int]:
         if row:
             return int(row[0]), int(row[1])
 
-        # Nieuwe week: weeknummer via settings.week_counter
         week_counter = db_get_setting("week_counter")
         if week_counter is None:
             week_counter = "1"
@@ -173,7 +191,7 @@ def db_get_film_by_interne_titel(interne_titel: str):
         conn.close()
 
 
-def db_create_film(interne_titel: str, maccsbox_titel: str, distributeur: str, land_herkomst: str):
+def db_create_film(interne_titel: str, maccsbox_titel: str, distributeur: str, land_herkomst: str) -> int:
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -188,10 +206,30 @@ def db_create_film(interne_titel: str, maccsbox_titel: str, distributeur: str, l
         conn.close()
 
 
+def db_get_or_create_zaal(zaal_naam: str) -> int | None:
+    zaal_naam = zaal_naam.strip()
+    if not zaal_naam:
+        return None
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM zalen WHERE naam=%s", (zaal_naam,))
+        row = cur.fetchone()
+        if row:
+            return int(row[0])
+        cur.execute("INSERT INTO zalen(naam) VALUES(%s)", (zaal_naam,))
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
 def db_upsert_daily_sales(
     datum: date,
     speelweek_id: int,
     film_id: int,
+    zaal_id: int | None,
     is_3d: bool,
     aantal_volw: int,
     aantal_kind: int,
@@ -207,11 +245,11 @@ def db_upsert_daily_sales(
         cur.execute(
             """
             INSERT INTO daily_sales(
-                datum, speelweek_id, film_id, is_3d,
+                datum, speelweek_id, film_id, zaal_id, is_3d,
                 aantal_volw, aantal_kind, bedrag_volw, bedrag_kind,
                 totaal_aantal, totaal_bedrag, source_file
             )
-            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
                 speelweek_id=VALUES(speelweek_id),
                 is_3d=VALUES(is_3d),
@@ -227,6 +265,7 @@ def db_upsert_daily_sales(
                 datum,
                 speelweek_id,
                 film_id,
+                zaal_id,
                 1 if is_3d else 0,
                 aantal_volw,
                 aantal_kind,
@@ -254,9 +293,7 @@ def db_fetch_history(from_date: date, to_date: date):
               sw.start_datum,
               sw.eind_datum,
               f.interne_titel,
-              f.maccsbox_titel,
-              f.distributeur,
-              f.land_herkomst,
+              z.naam AS zaal,
               ds.is_3d,
               ds.aantal_volw,
               ds.aantal_kind,
@@ -267,8 +304,9 @@ def db_fetch_history(from_date: date, to_date: date):
             FROM daily_sales ds
             JOIN films f ON f.id = ds.film_id
             JOIN speelweek sw ON sw.id = ds.speelweek_id
+            LEFT JOIN zalen z ON z.id = ds.zaal_id
             WHERE ds.datum BETWEEN %s AND %s
-            ORDER BY ds.datum ASC, f.interne_titel ASC
+            ORDER BY ds.datum ASC, z.naam ASC, f.interne_titel ASC
             """,
             (from_date, to_date),
         )
@@ -278,13 +316,204 @@ def db_fetch_history(from_date: date, to_date: date):
 
 
 # =========================
+# Calendar Picker (modal)
+# =========================
+class DatePickerDialog(tk.Toplevel):
+    """
+    Cross-platform calendar popup (no tkcalendar).
+    - Month/year navigation
+    - Grid of day buttons
+    - Selected day: black background, white text, visible border
+    - Returns a Python `date` in .selected
+    """
+    def __init__(self, parent, title: str, initial: date):
+        super().__init__(parent)
+        self.title(title)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self._selected: date | None = None
+        self._view_year = initial.year
+        self._view_month = initial.month
+        self._sel_date = initial
+
+        # --- layout ---
+        outer = tk.Frame(self, padx=12, pady=12, bg="white")
+        outer.pack(fill="both", expand=True)
+
+        # Header: prev / month-year / next
+        hdr = tk.Frame(outer, bg="white")
+        hdr.pack(fill="x")
+
+        self.btn_prev = tk.Button(hdr, text="◀", width=3, command=self._prev_month)
+        self.btn_prev.pack(side="left")
+
+        self.lbl_title = tk.Label(hdr, text="", bg="white", fg="black", font=("Arial", 14, "bold"))
+        self.lbl_title.pack(side="left", expand=True, fill="x", padx=8)
+
+        self.btn_next = tk.Button(hdr, text="▶", width=3, command=self._next_month)
+        self.btn_next.pack(side="right")
+
+        # Weekday labels
+        wdays = tk.Frame(outer, bg="white")
+        wdays.pack(fill="x", pady=(10, 4))
+
+        # Start on Monday (like your app)
+        self._weekday_names = ["Ma", "Di", "Wo", "Do", "Vr", "Za", "Zo"]
+        for i, name in enumerate(self._weekday_names):
+            tk.Label(wdays, text=name, width=4, bg="white", fg="black", font=("Arial", 11, "bold")).grid(row=0, column=i)
+
+        # Grid for days
+        self.grid_frame = tk.Frame(outer, bg="white")
+        self.grid_frame.pack()
+
+        # Buttons row
+        btns = tk.Frame(outer, bg="white")
+        btns.pack(fill="x", pady=(10, 0))
+        tk.Button(btns, text="Annuleren", command=self._cancel).pack(side="right")
+        tk.Button(btns, text="OK", command=self._ok).pack(side="right", padx=(0, 8))
+
+        self.bind("<Escape>", lambda e: self._cancel())
+        self.bind("<Return>", lambda e: self._ok())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        # Render month
+        self._render_month()
+
+        # Center popup
+        self.update_idletasks()
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        pw = parent.winfo_width()
+        ph = parent.winfo_height()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        self.geometry(f"+{px + (pw - w)//2}+{py + (ph - h)//2}")
+
+    @property
+    def selected(self):
+        return self._selected
+
+    # ---------- navigation ----------
+    def _prev_month(self):
+        if self._view_month == 1:
+            self._view_month = 12
+            self._view_year -= 1
+        else:
+            self._view_month -= 1
+        self._render_month()
+
+    def _next_month(self):
+        if self._view_month == 12:
+            self._view_month = 1
+            self._view_year += 1
+        else:
+            self._view_month += 1
+        self._render_month()
+
+    # ---------- rendering ----------
+    def _render_month(self):
+        # Title
+        month_name = calendar.month_name[self._view_month]
+        self.lbl_title.config(text=f"{month_name} {self._view_year}")
+
+        # Clear old grid
+        for child in self.grid_frame.winfo_children():
+            child.destroy()
+
+        cal = calendar.Calendar(firstweekday=0)  # 0 = Monday
+        weeks = cal.monthdayscalendar(self._view_year, self._view_month)
+
+        # Ensure 6 rows for stable size
+        while len(weeks) < 6:
+            weeks.append([0, 0, 0, 0, 0, 0, 0])
+
+        for r, week in enumerate(weeks):
+            for c, day in enumerate(week):
+                if day == 0:
+                    # empty cell
+                    lbl = tk.Label(self.grid_frame, text=" ", width=4, height=2, bg="white")
+                    lbl.grid(row=r, column=c, padx=2, pady=2)
+                    continue
+
+                d = date(self._view_year, self._view_month, day)
+                is_selected = (d == self._sel_date)
+
+                # Selected style: black bg, white fg, visible border
+                if is_selected:
+                    bg, fg = "red", "black"
+                    bd, relief, hl = 4, "solid", 1
+                else:
+                    bg, fg = "white", "black"
+                    bd, relief, hl = 1, "solid", 0
+
+                btn = tk.Button(
+                    self.grid_frame,
+                    text=str(day),
+                    width=4,
+                    height=2,
+                    bg=bg,
+                    fg=fg,
+                    activebackground="black",
+                    activeforeground="white",
+                    bd=bd,
+                    relief=relief,
+                    highlightthickness=hl,
+                    highlightbackground="red",
+                    command=lambda dd=d: self._set_selected(dd),
+                )
+                btn.grid(row=r, column=c, padx=2, pady=2)
+
+    def _set_selected(self, d: date):
+        self._sel_date = d
+        # If user clicks a day in another month view (not possible here), you'd adjust view.
+        self._render_month()
+
+    # ---------- actions ----------
+    def _ok(self):
+        self._selected = self._sel_date
+        self.destroy()
+
+    def _cancel(self):
+        self._selected = None
+        self.destroy()
+
+
+
+class DateField(ttk.Frame):
+    """Readonly field + calendar popup button."""
+    def __init__(self, parent, label: str, initial: date):
+        super().__init__(parent)
+        self.var = tk.StringVar(value=initial.strftime("%Y-%m-%d"))
+
+        ttk.Label(self, text=label).pack(side="left")
+        self.entry = ttk.Entry(self, textvariable=self.var, width=12, state="readonly")
+        self.entry.pack(side="left", padx=(6, 6))
+        ttk.Button(self, text="📅", width=3, command=self.pick).pack(side="left")
+
+    def pick(self):
+        current = datetime.strptime(self.var.get(), "%Y-%m-%d").date()
+        dlg = DatePickerDialog(self.winfo_toplevel(), "Kies datum", current)
+        self.wait_window(dlg)
+        if dlg.selected:
+            self.var.set(dlg.selected.strftime("%Y-%m-%d"))
+
+    def get_date(self) -> date:
+        return datetime.strptime(self.var.get(), "%Y-%m-%d").date()
+
+    def set_date(self, d: date):
+        self.var.set(d.strftime("%Y-%m-%d"))
+
+
+# =========================
 # UI App
 # =========================
 class SumUpFilmApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Cinema BackOffice – SumUp Filmrapport")
-        self.root.geometry("1450x900")
+        self.root.geometry("1400x860")
 
         self.unit_prices = {}
         self._active_item = None
@@ -293,6 +522,7 @@ class SumUpFilmApp:
 
         self._build_ui()
         self._bind_copy_shortcuts()
+        self._load_settings_into_ui()
 
     def _build_ui(self):
         self.nb = ttk.Notebook(self.root)
@@ -310,9 +540,6 @@ class SumUpFilmApp:
         self._build_history_tab()
         self._build_settings_tab()
 
-        # settings inladen naar UI
-        self._load_settings_into_ui()
-
     # -----------------------------
     # Import tab
     # -----------------------------
@@ -329,11 +556,10 @@ class SumUpFilmApp:
         mid = ttk.Frame(self.tab_import)
         mid.pack(fill="both", expand=True, pady=(10, 0))
 
+        # Import pane shows only what you want
         self.columns = (
-            "Interne titel",
-            "Maccsbox titel",
-            "Distributeur",
-            "Land",
+            "Film",
+            "Zaal",
             "3D",
             "Aantal volwassenen",
             "Aantal kinderen",
@@ -346,16 +572,17 @@ class SumUpFilmApp:
         self.tree = ttk.Treeview(mid, columns=self.columns, show="headings", selectmode="browse")
         for col in self.columns:
             self.tree.heading(col, text=col)
-            if col in ("Interne titel", "Maccsbox titel", "Distributeur"):
-                self.tree.column(col, width=230, anchor="w")
-            elif col in ("Land", "3D"):
-                self.tree.column(col, width=70, anchor="center")
+            if col == "Film":
+                self.tree.column(col, width=320, anchor="w")
+            elif col == "Zaal":
+                self.tree.column(col, width=110, anchor="center")
+            elif col == "3D":
+                self.tree.column(col, width=60, anchor="center")
             else:
-                self.tree.column(col, width=140, anchor="center")
+                self.tree.column(col, width=150, anchor="center")
 
         vsb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
-
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
@@ -446,7 +673,7 @@ class SumUpFilmApp:
         if not path:
             return
 
-        # Datum kiezen (default vandaag) via simpele input (kan later ook DateEntry in popup)
+        # ✅ import date = typed input (like before), NO calendar
         default_d = date.today().strftime("%Y-%m-%d")
         d_str = simpledialog.askstring(
             "Datum kiezen",
@@ -456,8 +683,9 @@ class SumUpFilmApp:
         )
         if not d_str:
             return
-        d = parse_date_yyyy_mm_dd(d_str)
-        if not d:
+        try:
+            d = datetime.strptime(d_str.strip(), "%Y-%m-%d").date()
+        except Exception:
             messagebox.showerror("Fout", "Ongeldige datum. Gebruik formaat YYYY-MM-DD.")
             return
 
@@ -469,7 +697,10 @@ class SumUpFilmApp:
 
         df = df[df["Categorie"].astype(str).str.lower() == "film"].copy()
 
-        df["Interne titel"] = df["Naam van variant"].apply(extract_second_part)
+        film_zaal = df["Naam van variant"].apply(detect_film_and_zaal)
+        df["Film"] = film_zaal.apply(lambda x: x[0])
+        df["Zaal"] = film_zaal.apply(lambda x: x[1])
+
         df["Aantal"] = pd.to_numeric(df.get("Aantal", 0), errors="coerce").fillna(0)
         df["Bedrag"] = pd.to_numeric(df.get("Bedrag", 0), errors="coerce").fillna(0)
 
@@ -483,7 +714,7 @@ class SumUpFilmApp:
         df["BedragKind"] = df["Bedrag"].where(df["IsKind"], 0)
 
         summary = (
-            df.groupby("Interne titel", as_index=False)
+            df.groupby(["Film", "Zaal"], as_index=False)
             .agg(
                 AantalVolw=("AantalVolw", "sum"),
                 AantalKind=("AantalKind", "sum"),
@@ -505,54 +736,41 @@ class SumUpFilmApp:
         self.unit_prices.clear()
 
         for _, row in summary.iterrows():
-            interne_titel = str(row["Interne titel"]).strip()
-            if not interne_titel:
+            film_titel = str(row["Film"]).strip()
+            zaal = str(row["Zaal"]).strip() if str(row["Zaal"]).strip() else ""
+            if not film_titel:
                 continue
 
-            film = db_get_film_by_interne_titel(interne_titel)
-
+            film = db_get_film_by_interne_titel(film_titel)
             if not film:
                 maccs = simpledialog.askstring(
                     "Nieuwe film",
-                    f"Maccsbox filmtitel voor:\n{interne_titel}",
-                    initialvalue=interne_titel,
+                    f"Maccsbox filmtitel voor:\n{film_titel}",
+                    initialvalue=film_titel,
                     parent=self.root,
                 )
                 if not maccs:
                     continue
-
-                distr = simpledialog.askstring(
-                    "Nieuwe film",
-                    f"Distributeur voor:\n{interne_titel}",
-                    initialvalue="",
-                    parent=self.root,
-                )
+                distr = simpledialog.askstring("Nieuwe film", f"Distributeur voor:\n{film_titel}", parent=self.root)
                 if distr is None:
                     continue
-
-                land = simpledialog.askstring(
-                    "Nieuwe film",
-                    f"Land van herkomst voor:\n{interne_titel}",
-                    initialvalue="",
-                    parent=self.root,
-                )
+                land = simpledialog.askstring("Nieuwe film", f"Land van herkomst voor:\n{film_titel}", parent=self.root)
                 if land is None:
                     continue
 
                 try:
-                    film_id = db_create_film(interne_titel, maccs.strip(), distr.strip(), land.strip())
-                    film = {
-                        "id": film_id,
-                        "interne_titel": interne_titel,
-                        "maccsbox_titel": maccs.strip(),
-                        "distributeur": distr.strip(),
-                        "land_herkomst": land.strip(),
-                    }
+                    film_id = db_create_film(film_titel, maccs.strip(), distr.strip(), land.strip())
+                    film = {"id": film_id}
                 except Exception as e:
                     messagebox.showerror("DB fout", f"Kon film niet opslaan:\n\n{e}")
                     continue
 
             film_id = int(film["id"])
+
+            if not zaal:
+                zaal = (simpledialog.askstring("Zaal ontbreekt", f"Welke zaal voor:\n{film_titel} ?", parent=self.root) or "").strip()
+
+            zaal_id = db_get_or_create_zaal(zaal) if zaal else None
 
             aantal_volw = int(row["AantalVolw"])
             aantal_kind = int(row["AantalKind"])
@@ -567,6 +785,7 @@ class SumUpFilmApp:
                     datum=d,
                     speelweek_id=speelweek_id,
                     film_id=film_id,
+                    zaal_id=zaal_id,
                     is_3d=is_3d,
                     aantal_volw=aantal_volw,
                     aantal_kind=aantal_kind,
@@ -577,17 +796,15 @@ class SumUpFilmApp:
                     source_file=os.path.basename(path),
                 )
             except Exception as e:
-                messagebox.showerror("DB fout", f"Kon daily_sales niet opslaan voor {interne_titel}:\n\n{e}")
+                messagebox.showerror("DB fout", f"Kon daily_sales niet opslaan voor {film_titel} ({zaal}):\n\n{e}")
                 continue
 
             item_id = self.tree.insert(
                 "",
                 "end",
                 values=(
-                    film["interne_titel"],
-                    film["maccsbox_titel"],
-                    film["distributeur"],
-                    film["land_herkomst"],
+                    film_titel,
+                    zaal,
                     "✅" if is_3d else "",
                     int(aantal_volw),
                     int(aantal_kind),
@@ -602,10 +819,11 @@ class SumUpFilmApp:
             kind_price = (bedrag_kind / aantal_kind) if aantal_kind > 0 else None
             self.unit_prices[item_id] = {"volw": volw_price, "kind": kind_price}
 
-        self.status.set(f"Geladen + opgeslagen: {os.path.basename(path)} | Datum: {d.isoformat()} | Speelweek: {weeknummer}")
+        self.status.set(
+            f"Geladen + opgeslagen: {os.path.basename(path)} | Datum: {d.isoformat()} | Speelweek: {weeknummer}"
+        )
         self._update_totals()
 
-        # Historiek alvast op dezelfde dag zetten
         self.hist_from.set_date(d)
         self.hist_to.set_date(d)
         self.refresh_history()
@@ -650,14 +868,14 @@ class SumUpFilmApp:
 
         values = list(self.tree.item(item, "values"))
 
-        # indices: 0 interne,1 maccs,2 distr,3 land,4 3D,5 av,6 ak,7 bv,8 bk,9 ta,10 tb
+        # columns: 0 Film, 1 Zaal, 2 3D, 3 av, 4 ak, 5 bv, 6 bk, 7 ta, 8 tb
         if col_name == "Aantal volwassenen":
-            index_aantal = 5
-            index_bedrag = 7
+            index_aantal = 3
+            index_bedrag = 5
             unit_key = "volw"
         else:
-            index_aantal = 6
-            index_bedrag = 8
+            index_aantal = 4
+            index_bedrag = 6
             unit_key = "kind"
 
         unit = self.unit_prices.get(item, {}).get(unit_key)
@@ -675,15 +893,13 @@ class SumUpFilmApp:
             self.unit_prices[item][unit_key] = unit
 
         new_bedrag = (unit * new_aantal) if unit else 0.0
-
         values[index_aantal] = new_aantal
         values[index_bedrag] = f"{new_bedrag:.2f}"
 
-        totaal_aantal = int(values[5]) + int(values[6])
-        totaal_bedrag = float(values[7]) + float(values[8])
-
-        values[9] = totaal_aantal
-        values[10] = f"{totaal_bedrag:.2f}"
+        totaal_aantal = int(values[3]) + int(values[4])
+        totaal_bedrag = float(values[5]) + float(values[6])
+        values[7] = totaal_aantal
+        values[8] = f"{totaal_bedrag:.2f}"
 
         self.tree.item(item, values=values)
 
@@ -696,8 +912,8 @@ class SumUpFilmApp:
         totaal_bedrag = 0.0
         for item in self.tree.get_children():
             vals = self.tree.item(item, "values")
-            totaal_aantal += int(vals[9])
-            totaal_bedrag += float(vals[10])
+            totaal_aantal += int(vals[7])
+            totaal_bedrag += float(vals[8])
 
         self.total_label.set(
             f"Totaal tickets: {totaal_aantal} | Totaal bedrag: {totaal_bedrag:.2f}".replace(".", ",")
@@ -714,21 +930,17 @@ class SumUpFilmApp:
         messagebox.showinfo("Export", "CSV succesvol opgeslagen.")
 
     # -----------------------------
-    # Historiek tab (met kalender)
+    # History tab (calendar popup fields)
     # -----------------------------
     def _build_history_tab(self):
         top = ttk.Frame(self.tab_history)
         top.pack(fill="x")
 
-        ttk.Label(top, text="Van:").pack(side="left")
-        self.hist_from = DateEntry(top, width=12, date_pattern="yyyy-mm-dd")
-        self.hist_from.set_date(date.today() - timedelta(days=7))
-        self.hist_from.pack(side="left", padx=(6, 16))
+        self.hist_from = DateField(top, "Van:", date.today() - timedelta(days=7))
+        self.hist_from.pack(side="left", padx=(0, 18))
 
-        ttk.Label(top, text="Tot:").pack(side="left")
-        self.hist_to = DateEntry(top, width=12, date_pattern="yyyy-mm-dd")
-        self.hist_to.set_date(date.today())
-        self.hist_to.pack(side="left", padx=(6, 16))
+        self.hist_to = DateField(top, "Tot:", date.today())
+        self.hist_to.pack(side="left", padx=(0, 18))
 
         ttk.Button(top, text="Vernieuwen", command=self.refresh_history).pack(side="left")
         ttk.Button(top, text="Export historiek (CSV)", command=self.export_history_csv).pack(side="left", padx=8)
@@ -744,10 +956,8 @@ class SumUpFilmApp:
             "Speelweek",
             "Week start",
             "Week eind",
-            "Interne titel",
-            "Maccsbox titel",
-            "Distributeur",
-            "Land",
+            "Film",
+            "Zaal",
             "3D",
             "Volw",
             "Kind",
@@ -760,12 +970,14 @@ class SumUpFilmApp:
         self.hist_tree = ttk.Treeview(mid, columns=self.hist_cols, show="headings")
         for c in self.hist_cols:
             self.hist_tree.heading(c, text=c)
-            if c in ("Interne titel", "Maccsbox titel", "Distributeur"):
-                self.hist_tree.column(c, width=220, anchor="w")
-            elif c in ("Land", "3D"):
-                self.hist_tree.column(c, width=70, anchor="center")
+            if c == "Film":
+                self.hist_tree.column(c, width=320, anchor="w")
+            elif c == "Zaal":
+                self.hist_tree.column(c, width=110, anchor="center")
+            elif c == "3D":
+                self.hist_tree.column(c, width=60, anchor="center")
             else:
-                self.hist_tree.column(c, width=120, anchor="center")
+                self.hist_tree.column(c, width=130, anchor="center")
 
         vsb = ttk.Scrollbar(mid, orient="vertical", command=self.hist_tree.yview)
         self.hist_tree.configure(yscrollcommand=vsb.set)
@@ -778,7 +990,6 @@ class SumUpFilmApp:
     def refresh_history(self):
         f = self.hist_from.get_date()
         t = self.hist_to.get_date()
-
         if t < f:
             messagebox.showerror("Fout", "‘Tot’ mag niet vóór ‘Van’ liggen.")
             return
@@ -802,9 +1013,7 @@ class SumUpFilmApp:
                     str(r["start_datum"]),
                     str(r["eind_datum"]),
                     r["interne_titel"],
-                    r["maccsbox_titel"],
-                    r["distributeur"],
-                    r["land_herkomst"],
+                    r["zaal"] or "",
                     "✅" if int(r["is_3d"]) == 1 else "",
                     int(r["aantal_volw"]),
                     int(r["aantal_kind"]),
@@ -829,7 +1038,7 @@ class SumUpFilmApp:
         messagebox.showinfo("Export", "Historiek CSV opgeslagen.")
 
     # -----------------------------
-    # Instellingen tab
+    # Settings tab
     # -----------------------------
     def _build_settings_tab(self):
         frm = ttk.Frame(self.tab_settings)
@@ -837,10 +1046,14 @@ class SumUpFilmApp:
 
         ttk.Label(frm, text="Speelweek startdag:").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
         self.weekday_var = tk.StringVar(value="Dinsdag")
-        self.weekday_combo = ttk.Combobox(frm, textvariable=self.weekday_var, values=WEEKDAY_LABELS, state="readonly", width=18)
+        self.weekday_combo = ttk.Combobox(
+            frm, textvariable=self.weekday_var, values=WEEKDAY_LABELS, state="readonly", width=18
+        )
         self.weekday_combo.grid(row=0, column=1, sticky="w", pady=6)
 
-        ttk.Label(frm, text="Week teller (volgende nieuwe speelweek):").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
+        ttk.Label(frm, text="Week teller (volgende nieuwe speelweek):").grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=6
+        )
         self.week_counter_var = tk.StringVar(value="1")
         ttk.Entry(frm, textvariable=self.week_counter_var, width=10).grid(row=1, column=1, sticky="w", pady=6)
 
@@ -852,21 +1065,16 @@ class SumUpFilmApp:
         frm.columnconfigure(2, weight=1)
 
     def _load_settings_into_ui(self):
-        # week start
         ws = db_get_week_start_weekday()
         self.weekday_var.set(WEEKDAY_TO_LABEL.get(ws, "Dinsdag"))
-
-        # week counter
         wc = db_get_setting("week_counter") or "1"
         self.week_counter_var.set(str(wc))
 
     def save_settings(self):
-        # week start
         lbl = self.weekday_var.get()
         ws = LABEL_TO_WEEKDAY.get(lbl, 1)
         db_set_setting("week_start_weekday", str(ws))
 
-        # week counter
         try:
             wc = int(self.week_counter_var.get().strip())
             if wc < 1:
