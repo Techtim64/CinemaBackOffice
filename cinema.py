@@ -3,16 +3,20 @@ import re
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from datetime import date, datetime, timedelta
+import calendar
 
 import pandas as pd
 from mysql.connector import pooling
 
-import calendar
-
+# PDF (ReportLab)
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 
 
 # =========================
-# CONFIG - vul dit in
+# CONFIG
 # =========================
 DB_CONFIG = {
     "host": "172.20.18.2",
@@ -24,6 +28,15 @@ DB_CONFIG = {
 
 POOL = pooling.MySQLConnectionPool(pool_name="cinema_pool", pool_size=5, **DB_CONFIG)
 
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+LOGO_PATH = os.path.join(ASSETS_DIR, "logo.png")
+
+DEFAULT_BTW_RATE = 0.0566      # 5,66% (zoals Excel BO1)
+DEFAULT_AUTEURS_RATE = 0.0120  # 1,20% op NETTO (zoals Excel BO1)
+
+WEEKDAY_LABELS = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+LABEL_TO_WEEKDAY = {lbl: i for i, lbl in enumerate(WEEKDAY_LABELS)}
+WEEKDAY_TO_LABEL = {i: lbl for i, lbl in enumerate(WEEKDAY_LABELS)}
 
 # =========================
 # Helpers
@@ -44,9 +57,6 @@ def extract_variant_parts(variant: str) -> list[str]:
     return [s] if s else []
 
 
-ZAAL_RE = re.compile(r"\bzaal\s*\d+\b", re.IGNORECASE)
-
-
 def detect_film_and_zaal(variant: str) -> tuple[str, str]:
     """
     Detecteert film + zaal uit Naam van variant.
@@ -56,13 +66,11 @@ def detect_film_and_zaal(variant: str) -> tuple[str, str]:
     - bevat 'zaal boven'    -> zaal = '2'
     - film = tweede onderdeel indien aanwezig
     """
-
     if pd.isna(variant):
         return "", ""
 
     s = str(variant).strip().lower()
 
-    # Zaal mapping
     if "zaal beneden" in s:
         zaal = "1"
     elif "zaal boven" in s:
@@ -70,7 +78,6 @@ def detect_film_and_zaal(variant: str) -> tuple[str, str]:
     else:
         zaal = ""
 
-    # Film extractie (zoals je eerder deed: tweede deel)
     parts = extract_variant_parts(variant)
     if len(parts) >= 2:
         film = parts[1]
@@ -82,10 +89,28 @@ def detect_film_and_zaal(variant: str) -> tuple[str, str]:
     return film.strip(), zaal
 
 
+def _money(x: float) -> str:
+    return f"{x:.2f}".replace(".", ",")
 
-WEEKDAY_LABELS = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
-LABEL_TO_WEEKDAY = {lbl: i for i, lbl in enumerate(WEEKDAY_LABELS)}
-WEEKDAY_TO_LABEL = {i: lbl for i, lbl in enumerate(WEEKDAY_LABELS)}
+
+def _safe_filename(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"[\\/:*?\"<>|]+", "_", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:160] if len(s) > 160 else s
+
+
+def _weekday_full_nl(d: date) -> str:
+    return WEEKDAY_TO_LABEL[d.weekday()]
+
+
+def _parse_percent_to_rate(s: str) -> float:
+    """
+    Input: "5,66" of "5.66" of "5,66%" -> output rate 0.0566
+    """
+    s = (s or "").strip().replace("%", "").replace(",", ".")
+    p = float(s)
+    return p / 100.0
 
 
 # =========================
@@ -114,6 +139,23 @@ def db_set_setting(key: str, value: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def db_get_float_setting(key: str, default: float) -> float:
+    v = db_get_setting(key)
+    if v is None:
+        db_set_setting(key, str(default))
+        return default
+    try:
+        s = str(v).strip().replace(",", ".")
+        return float(s)
+    except Exception:
+        db_set_setting(key, str(default))
+        return default
+
+
+def db_set_float_setting(key: str, value: float) -> None:
+    db_set_setting(key, str(value))
 
 
 def db_get_week_start_weekday() -> int:
@@ -316,16 +358,330 @@ def db_fetch_history(from_date: date, to_date: date):
 
 
 # =========================
+# PDF: DB queries
+# =========================
+def db_fetch_borderel_combos(from_date: date, to_date: date):
+    """
+    Unieke combos binnen range (speelweek + film + zaal).
+    """
+    conn = get_conn()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT DISTINCT
+              ds.speelweek_id,
+              sw.weeknummer,
+              sw.start_datum,
+              sw.eind_datum,
+              ds.film_id,
+              f.interne_titel,
+              f.maccsbox_titel,
+              f.distributeur,
+              f.land_herkomst,
+              COALESCE(z.naam, '') AS zaal
+            FROM daily_sales ds
+            JOIN speelweek sw ON sw.id = ds.speelweek_id
+            JOIN films f ON f.id = ds.film_id
+            LEFT JOIN zalen z ON z.id = ds.zaal_id
+            WHERE ds.datum BETWEEN %s AND %s
+            ORDER BY sw.start_datum ASC, zaal ASC, f.interne_titel ASC
+            """,
+            (from_date, to_date),
+        )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def db_fetch_week_sales_for_film_zaal(speelweek_id: int, film_id: int, zaal_naam: str):
+    conn = get_conn()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT
+              ds.datum,
+              ds.aantal_volw, ds.aantal_kind,
+              ds.bedrag_volw, ds.bedrag_kind,
+              ds.is_3d,
+              sw.weeknummer, sw.start_datum, sw.eind_datum,
+              f.interne_titel, f.maccsbox_titel, f.distributeur, f.land_herkomst,
+              COALESCE(z.naam, '') AS zaal
+            FROM daily_sales ds
+            JOIN speelweek sw ON sw.id = ds.speelweek_id
+            JOIN films f ON f.id = ds.film_id
+            LEFT JOIN zalen z ON z.id = ds.zaal_id
+            WHERE ds.speelweek_id = %s
+              AND ds.film_id = %s
+              AND COALESCE(z.naam, '') = %s
+            ORDER BY ds.datum ASC
+            """,
+            (speelweek_id, film_id, zaal_naam or ""),
+        )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+# =========================
+# PDF: BO1 layout (zonder ticketnummers)
+# =========================
+def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate: float, auteurs_rate: float):
+    """
+    BO1 layout:
+    - zelfde blokken/labels als Excel BO1 / jouw voorbeeld PDF
+    - ticketnummers (begin/eind) NIET tonen
+    - BTW = bruto * btw_rate
+    - Auteurs = netto * auteurs_rate   (zoals Excel: M31 = M27*1.2%)
+    """
+    if not week_rows:
+        raise ValueError("Geen data voor deze (speelweek + film + zaal).")
+
+    meta = week_rows[0]
+    film_title = (meta.get("maccsbox_titel") or meta.get("interne_titel") or "").strip()
+    distributeur = (meta.get("distributeur") or "").strip()
+    land = (meta.get("land_herkomst") or "").strip()
+    weeknr = int(meta.get("weeknummer") or 0)
+    week_start = meta.get("start_datum")
+    week_end = meta.get("eind_datum")
+    zaal = (meta.get("zaal") or "").strip()
+
+    # Startdatum
+    if isinstance(week_start, str):
+        week_start_d = datetime.strptime(week_start, "%Y-%m-%d").date()
+    else:
+        week_start_d = week_start
+
+    # Map datum -> row
+    rows_by_date = {r["datum"]: r for r in week_rows}
+
+    # Totals
+    gross_total = sum(float(r.get("bedrag_volw") or 0.0) + float(r.get("bedrag_kind") or 0.0) for r in week_rows)
+    tickets_total = sum(int(r.get("aantal_volw") or 0) + int(r.get("aantal_kind") or 0) for r in week_rows)
+
+    btw_total = gross_total * btw_rate
+    netto_total = gross_total - btw_total
+    auteurs_total = netto_total * auteurs_rate
+    verschil = netto_total - (netto_total - auteurs_total)  # = auteurs_total
+
+    # Unit prices (voor BO1 prijs-kolom) -> gemiddeld over week
+    volw_qty = sum(int(r.get("aantal_volw") or 0) for r in week_rows)
+    kind_qty = sum(int(r.get("aantal_kind") or 0) for r in week_rows)
+    volw_amt = sum(float(r.get("bedrag_volw") or 0.0) for r in week_rows)
+    kind_amt = sum(float(r.get("bedrag_kind") or 0.0) for r in week_rows)
+    volw_price = (volw_amt / volw_qty) if volw_qty else 0.0
+    kind_price = (kind_amt / kind_qty) if kind_qty else 0.0
+
+    # PDF
+    c = canvas.Canvas(output_path, pagesize=A4)
+    W, H = A4
+    left = 18 * mm
+    right = W - 18 * mm
+    top = H - 14 * mm
+
+    # Logo
+    if os.path.exists(LOGO_PATH):
+        try:
+            img = ImageReader(LOGO_PATH)
+            c.drawImage(img, left, top - 26 * mm, width=42 * mm, height=22 * mm, mask="auto")
+        except Exception:
+            pass
+
+    # Header rechts van logo
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(left + 48 * mm, top - 5 * mm, "BORDEREL VAN ONTVANGSTEN")
+    c.setFont("Helvetica", 9)
+    c.drawString(left + 48 * mm, top - 11 * mm, "Lavendelstraat, 25    9400 NINOVE")
+    c.drawString(left + 48 * mm, top - 16 * mm, "Tel/Fax  : 054/33.10.96  *  054/34.37.57")
+    c.drawString(left + 48 * mm, top - 21 * mm, "RPR  :  BE.0.436.658.564")
+    c.drawString(left + 48 * mm, top - 26 * mm, "facturen@cinemacentral.be")
+
+    # Nr repertorium (label)
+    c.setFont("Helvetica", 9)
+    c.drawString(right - 45 * mm, top - 33 * mm, "Nr repertorium")
+
+    # Datum + zaal
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(left, top - 38 * mm, week_start_d.strftime("%d %b %Y").lower())
+    zaal_label = f"ZAAL {zaal}".strip() if zaal else "ZAAL"
+    c.drawString(left + 60 * mm, top - 38 * mm, zaal_label)
+
+    # Titel
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(left, top - 50 * mm, "TITEL VAN DE FILM EN VAN DE BIJFILM")
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(left, top - 62 * mm, film_title.upper())
+
+    # Week info + codes regel
+    c.setFont("Helvetica", 9)
+    c.drawString(left, top - 72 * mm, f"{week_start_d.year}  |  Week {weeknr}  {week_start} tot {week_end}")
+    c.drawString(left, top - 80 * mm, "Code NATIONALITEIT     Code      Code")
+    c.drawString(left, top - 86 * mm, f"{land} {distributeur}".strip())
+
+    # =============== GEBRUIKTE TICKETS (zonder ticketnummers) ===============
+    y = top - 96 * mm
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left, y, "GEBRUIKTE  TICKETS")
+    c.drawString(left + 70 * mm, y, "toeschouwers")
+    c.drawString(left + 110 * mm, y, "BTW inbegrepen")
+
+    y -= 7 * mm
+    c.setFont("Helvetica", 9)
+    c.drawString(left + 20 * mm, y, "Aantal")
+    c.drawString(left + 43 * mm, y, "Prijs")
+    c.drawString(left + 70 * mm, y, "Bruto ontvangst")
+
+    # Volwassenen
+    y -= 6 * mm
+    c.drawRightString(left + 34 * mm, y, str(volw_qty))
+    c.drawString(left + 36 * mm, y, "x")
+    c.drawRightString(left + 55 * mm, y, _money(volw_price))
+    c.drawRightString(left + 100 * mm, y, _money(volw_amt))
+
+    # Kinderen
+    y -= 6 * mm
+    c.drawRightString(left + 34 * mm, y, str(kind_qty))
+    c.drawString(left + 36 * mm, y, "x")
+    c.drawRightString(left + 55 * mm, y, _money(kind_price))
+    c.drawRightString(left + 100 * mm, y, _money(kind_amt))
+
+    # Totaal bruto
+    y -= 7 * mm
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left + 20 * mm, y, "Totaal")
+    c.drawRightString(left + 100 * mm, y, _money(gross_total))
+
+    # Kosteloos label
+    y -= 10 * mm
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left, y, "Kosteloos")
+
+    # =============== Voorstelling tabel ===============
+    y -= 10 * mm
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left, y, "Voorstelling")
+    c.drawString(left + 28 * mm, y, "       Betalende")
+    c.drawString(left + 28 * mm, y - 6 * mm, " toeschouwers")
+    c.drawString(left + 70 * mm, y, "Bruto")
+    c.drawString(left + 70 * mm, y - 6 * mm, "ontvangst")
+    c.drawString(left + 118 * mm, y, f"BTW  {btw_rate*100:.2f} %".replace(".", ","))
+
+    c.setLineWidth(1)
+    c.line(left, y + 4 * mm, right, y + 4 * mm)
+
+    # kolomheaders (Aantal / Prijs)
+    y -= 12 * mm
+    c.setFont("Helvetica", 9)
+    c.drawString(left + 28 * mm, y, "Aantal")
+    c.drawString(left + 52 * mm, y, "Prijs")
+    c.drawString(left + 70 * mm, y, "Verton")
+    c.drawString(left + 86 * mm, y, "Dag")
+
+    # day blocks (7 dagen vanaf week_start)
+    y -= 7 * mm
+
+    def draw_day_block(day_label: str, av: int, ak: int, gross_v: float, gross_k: float, day_total: float):
+        nonlocal y
+        # volwassenen lijn
+        c.setFont("Helvetica", 9)
+        c.drawString(left, y, day_label)
+        c.drawRightString(left + 44 * mm, y, str(av))
+        c.drawString(left + 45 * mm, y, "x")
+        c.drawRightString(left + 60 * mm, y, _money(volw_price))
+        c.drawRightString(left + 98 * mm, y, _money(gross_v))
+        y -= 6 * mm
+        # kinderen lijn
+        c.drawRightString(left + 44 * mm, y, str(ak))
+        c.drawString(left + 45 * mm, y, "x")
+        c.drawRightString(left + 60 * mm, y, _money(kind_price))
+        c.drawRightString(left + 98 * mm, y, _money(gross_k))
+        y -= 7 * mm
+        # dag subtotaal (in Excel staat in kolom F als som van E)
+        # we tekenen enkel het dagtotaal rechts (zoals “Dag”)
+        c.drawRightString(left + 98 * mm, y + 7 * mm, "")  # placeholder, keep spacing
+        # BTW kolom: Excel toont enkel 1 totaal BTW bovenaan rechts; in PDF staat enkel BTW% bovenaan.
+        # BO1 in Excel zet totale BTW in M24 en Netto/Auteurs eronder.
+        # Dus per-dag BTW tonen we NIET; enkel totale blok rechts onderaan.
+        # (ruimtelijk klopt dit met BO1)
+        return
+
+    # Draw 7 days in BO1 order starting at week_start_d
+    for i in range(7):
+        d = week_start_d + timedelta(days=i)
+        r = rows_by_date.get(d)
+
+        av = int(r.get("aantal_volw") or 0) if r else 0
+        ak = int(r.get("aantal_kind") or 0) if r else 0
+        gv = float(r.get("bedrag_volw") or 0.0) if r else 0.0
+        gk = float(r.get("bedrag_kind") or 0.0) if r else 0.0
+        day_total = gv + gk
+
+        draw_day_block(_weekday_full_nl(d), av, ak, gv, gk, day_total)
+
+    # Subtotaal
+    c.setLineWidth(0.8)
+    c.line(left, y + 3 * mm, left + 100 * mm, y + 3 * mm)
+
+    y -= 2 * mm
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left, y, "Subtotaal")
+    c.drawRightString(left + 44 * mm, y, str(volw_qty))
+    c.drawString(left + 45 * mm, y, "x")
+    c.drawRightString(left + 60 * mm, y, _money(volw_price))
+    c.drawRightString(left + 98 * mm, y, _money(volw_amt))
+    y -= 6 * mm
+    c.drawRightString(left + 44 * mm, y, str(kind_qty))
+    c.drawString(left + 45 * mm, y, "x")
+    c.drawRightString(left + 60 * mm, y, _money(kind_price))
+    c.drawRightString(left + 98 * mm, y, _money(kind_amt))
+    y -= 7 * mm
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left, y, "TOTAAL")
+    c.drawRightString(left + 44 * mm, y, str(tickets_total))
+    c.drawRightString(left + 98 * mm, y, _money(gross_total))
+
+    # =============== Rechter blok (Bruto/BTW/Netto/Auteurs/Verschil) ===============
+    # Plaats ongeveer zoals in BO1 (kolom M in Excel)
+    x_label = left + 112 * mm
+    x_val = right
+
+    # Bruto-ontvangst.
+    c.setFont("Helvetica", 9)
+    c.drawString(x_label, top - 118 * mm, "Bruto-Ontvangst.")
+    c.drawRightString(x_val, top - 118 * mm, _money(gross_total))
+
+    # BTW
+    c.drawString(x_label, top - 130 * mm, f"BTW  {btw_rate*100:.2f} %".replace(".", ","))
+    c.drawRightString(x_val, top - 130 * mm, _money(btw_total))
+
+    # Netto
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(x_label, top - 142 * mm, "Netto-Ontvangst")
+    c.drawRightString(x_val, top - 142 * mm, _money(netto_total))
+
+    # Auteursrechten
+    c.setFont("Helvetica", 9)
+    c.drawString(x_label, top - 154 * mm, "Auteursrechten")
+    c.drawRightString(x_val, top - 154 * mm, _money(auteurs_total))
+
+    # Verschil
+    c.drawString(x_label, top - 186 * mm, "Verschil")
+    c.drawRightString(x_val, top - 186 * mm, _money(verschil))
+
+    # =============== Onderste verklaring + handtekening ===============
+    c.setFont("Helvetica", 9)
+    c.drawString(left, 22 * mm, "Te NINOVE")
+    c.drawString(left + 40 * mm, 22 * mm, "Oprecht en  volledig verklaard                      Handtekening,")
+    c.drawRightString(right, 22 * mm, week_start_d.strftime("%d %b %Y").lower())
+
+    c.save()
+
+
+# =========================
 # Calendar Picker (modal)
 # =========================
 class DatePickerDialog(tk.Toplevel):
-    """
-    Cross-platform calendar popup (no tkcalendar).
-    - Month/year navigation
-    - Grid of day buttons
-    - Selected day: black background, white text, visible border
-    - Returns a Python `date` in .selected
-    """
     def __init__(self, parent, title: str, initial: date):
         super().__init__(parent)
         self.title(title)
@@ -338,37 +694,27 @@ class DatePickerDialog(tk.Toplevel):
         self._view_month = initial.month
         self._sel_date = initial
 
-        # --- layout ---
         outer = tk.Frame(self, padx=12, pady=12, bg="white")
         outer.pack(fill="both", expand=True)
 
-        # Header: prev / month-year / next
         hdr = tk.Frame(outer, bg="white")
         hdr.pack(fill="x")
 
-        self.btn_prev = tk.Button(hdr, text="◀", width=3, command=self._prev_month)
-        self.btn_prev.pack(side="left")
-
+        tk.Button(hdr, text="◀", width=3, command=self._prev_month).pack(side="left")
         self.lbl_title = tk.Label(hdr, text="", bg="white", fg="black", font=("Arial", 14, "bold"))
         self.lbl_title.pack(side="left", expand=True, fill="x", padx=8)
+        tk.Button(hdr, text="▶", width=3, command=self._next_month).pack(side="right")
 
-        self.btn_next = tk.Button(hdr, text="▶", width=3, command=self._next_month)
-        self.btn_next.pack(side="right")
-
-        # Weekday labels
         wdays = tk.Frame(outer, bg="white")
         wdays.pack(fill="x", pady=(10, 4))
+        for i, name in enumerate(["Ma", "Di", "Wo", "Do", "Vr", "Za", "Zo"]):
+            tk.Label(wdays, text=name, width=4, bg="white", fg="black", font=("Arial", 11, "bold")).grid(
+                row=0, column=i
+            )
 
-        # Start on Monday (like your app)
-        self._weekday_names = ["Ma", "Di", "Wo", "Do", "Vr", "Za", "Zo"]
-        for i, name in enumerate(self._weekday_names):
-            tk.Label(wdays, text=name, width=4, bg="white", fg="black", font=("Arial", 11, "bold")).grid(row=0, column=i)
-
-        # Grid for days
         self.grid_frame = tk.Frame(outer, bg="white")
         self.grid_frame.pack()
 
-        # Buttons row
         btns = tk.Frame(outer, bg="white")
         btns.pack(fill="x", pady=(10, 0))
         tk.Button(btns, text="Annuleren", command=self._cancel).pack(side="right")
@@ -378,24 +724,18 @@ class DatePickerDialog(tk.Toplevel):
         self.bind("<Return>", lambda e: self._ok())
         self.protocol("WM_DELETE_WINDOW", self._cancel)
 
-        # Render month
         self._render_month()
 
-        # Center popup
         self.update_idletasks()
-        px = parent.winfo_rootx()
-        py = parent.winfo_rooty()
-        pw = parent.winfo_width()
-        ph = parent.winfo_height()
-        w = self.winfo_width()
-        h = self.winfo_height()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        w, h = self.winfo_width(), self.winfo_height()
         self.geometry(f"+{px + (pw - w)//2}+{py + (ph - h)//2}")
 
     @property
     def selected(self):
         return self._selected
 
-    # ---------- navigation ----------
     def _prev_month(self):
         if self._view_month == 1:
             self._view_month = 12
@@ -412,42 +752,28 @@ class DatePickerDialog(tk.Toplevel):
             self._view_month += 1
         self._render_month()
 
-    # ---------- rendering ----------
     def _render_month(self):
-        # Title
-        month_name = calendar.month_name[self._view_month]
-        self.lbl_title.config(text=f"{month_name} {self._view_year}")
+        self.lbl_title.config(text=f"{calendar.month_name[self._view_month]} {self._view_year}")
 
-        # Clear old grid
         for child in self.grid_frame.winfo_children():
             child.destroy()
 
-        cal = calendar.Calendar(firstweekday=0)  # 0 = Monday
+        cal = calendar.Calendar(firstweekday=0)
         weeks = cal.monthdayscalendar(self._view_year, self._view_month)
-
-        # Ensure 6 rows for stable size
         while len(weeks) < 6:
             weeks.append([0, 0, 0, 0, 0, 0, 0])
 
         for r, week in enumerate(weeks):
             for c, day in enumerate(week):
                 if day == 0:
-                    # empty cell
-                    lbl = tk.Label(self.grid_frame, text=" ", width=4, height=2, bg="white")
-                    lbl.grid(row=r, column=c, padx=2, pady=2)
+                    tk.Label(self.grid_frame, text=" ", width=4, height=2, bg="white").grid(
+                        row=r, column=c, padx=2, pady=2
+                    )
                     continue
-
                 d = date(self._view_year, self._view_month, day)
                 is_selected = (d == self._sel_date)
-
-                # Selected style: black bg, white fg, visible border
-                if is_selected:
-                    bg, fg = "red", "black"
-                    bd, relief, hl = 4, "solid", 1
-                else:
-                    bg, fg = "white", "black"
-                    bd, relief, hl = 1, "solid", 0
-
+                bg = "red" if is_selected else "white"
+                fg = "black"
                 btn = tk.Button(
                     self.grid_frame,
                     text=str(day),
@@ -455,22 +781,16 @@ class DatePickerDialog(tk.Toplevel):
                     height=2,
                     bg=bg,
                     fg=fg,
-                    activebackground="black",
-                    activeforeground="white",
-                    bd=bd,
-                    relief=relief,
-                    highlightthickness=hl,
-                    highlightbackground="red",
+                    bd=2 if is_selected else 1,
+                    relief="solid",
                     command=lambda dd=d: self._set_selected(dd),
                 )
                 btn.grid(row=r, column=c, padx=2, pady=2)
 
     def _set_selected(self, d: date):
         self._sel_date = d
-        # If user clicks a day in another month view (not possible here), you'd adjust view.
         self._render_month()
 
-    # ---------- actions ----------
     def _ok(self):
         self._selected = self._sel_date
         self.destroy()
@@ -480,13 +800,10 @@ class DatePickerDialog(tk.Toplevel):
         self.destroy()
 
 
-
 class DateField(ttk.Frame):
-    """Readonly field + calendar popup button."""
     def __init__(self, parent, label: str, initial: date):
         super().__init__(parent)
         self.var = tk.StringVar(value=initial.strftime("%Y-%m-%d"))
-
         ttk.Label(self, text=label).pack(side="left")
         self.entry = ttk.Entry(self, textvariable=self.var, width=12, state="readonly")
         self.entry.pack(side="left", padx=(6, 6))
@@ -556,7 +873,6 @@ class SumUpFilmApp:
         mid = ttk.Frame(self.tab_import)
         mid.pack(fill="both", expand=True, pady=(10, 0))
 
-        # Import pane shows only what you want
         self.columns = (
             "Film",
             "Zaal",
@@ -589,8 +905,6 @@ class SumUpFilmApp:
         self.tree.bind("<Double-1>", self._start_edit)
         self.tree.bind("<Button-1>", self._on_left_click, add=True)
         self.tree.bind("<Button-3>", self._on_right_click, add=True)
-        self.tree.bind("<Button-2>", self._on_right_click, add=True)
-        self.tree.bind("<Control-Button-1>", self._on_right_click, add=True)
 
         bottom = ttk.Frame(self.tab_import)
         bottom.pack(fill="x", pady=(10, 0))
@@ -673,7 +987,6 @@ class SumUpFilmApp:
         if not path:
             return
 
-        # ✅ import date = typed input (like before), NO calendar
         default_d = date.today().strftime("%Y-%m-%d")
         d_str = simpledialog.askstring(
             "Datum kiezen",
@@ -751,9 +1064,11 @@ class SumUpFilmApp:
                 )
                 if not maccs:
                     continue
+
                 distr = simpledialog.askstring("Nieuwe film", f"Distributeur voor:\n{film_titel}", parent=self.root)
                 if distr is None:
                     continue
+
                 land = simpledialog.askstring("Nieuwe film", f"Land van herkomst voor:\n{film_titel}", parent=self.root)
                 if land is None:
                     continue
@@ -819,9 +1134,7 @@ class SumUpFilmApp:
             kind_price = (bedrag_kind / aantal_kind) if aantal_kind > 0 else None
             self.unit_prices[item_id] = {"volw": volw_price, "kind": kind_price}
 
-        self.status.set(
-            f"Geladen + opgeslagen: {os.path.basename(path)} | Datum: {d.isoformat()} | Speelweek: {weeknummer}"
-        )
+        self.status.set(f"Geladen + opgeslagen: {os.path.basename(path)} | Datum: {d.isoformat()} | Speelweek: {weeknummer}")
         self._update_totals()
 
         self.hist_from.set_date(d)
@@ -902,7 +1215,6 @@ class SumUpFilmApp:
         values[8] = f"{totaal_bedrag:.2f}"
 
         self.tree.item(item, values=values)
-
         entry.destroy()
         self.root.focus_set()
         self._update_totals()
@@ -930,7 +1242,7 @@ class SumUpFilmApp:
         messagebox.showinfo("Export", "CSV succesvol opgeslagen.")
 
     # -----------------------------
-    # History tab (calendar popup fields)
+    # Historiek tab + PDF export
     # -----------------------------
     def _build_history_tab(self):
         top = ttk.Frame(self.tab_history)
@@ -944,6 +1256,8 @@ class SumUpFilmApp:
 
         ttk.Button(top, text="Vernieuwen", command=self.refresh_history).pack(side="left")
         ttk.Button(top, text="Export historiek (CSV)", command=self.export_history_csv).pack(side="left", padx=8)
+
+        ttk.Button(top, text="Export PDF's (BO1)", command=self.export_borderels_pdf_bo1).pack(side="left", padx=8)
 
         self.hist_status = tk.StringVar(value="")
         ttk.Label(top, textvariable=self.hist_status).pack(side="left", padx=20)
@@ -1033,12 +1347,69 @@ class SumUpFilmApp:
         path = filedialog.asksaveasfilename(defaultextension=".csv")
         if not path:
             return
-        df = pd.DataFrame(self._history_cache)
-        df.to_csv(path, index=False)
+        pd.DataFrame(self._history_cache).to_csv(path, index=False)
         messagebox.showinfo("Export", "Historiek CSV opgeslagen.")
 
+    def export_borderels_pdf_bo1(self):
+        f = self.hist_from.get_date()
+        t = self.hist_to.get_date()
+        if t < f:
+            messagebox.showerror("Fout", "‘Tot’ mag niet vóór ‘Van’ liggen.")
+            return
+
+        folder = filedialog.askdirectory(title="Kies map voor PDF export")
+        if not folder:
+            return
+
+        btw_rate = db_get_float_setting("btw_rate", DEFAULT_BTW_RATE)
+        auteurs_rate = db_get_float_setting("auteurs_rate", DEFAULT_AUTEURS_RATE)
+
+        try:
+            combos = db_fetch_borderel_combos(f, t)
+        except Exception as e:
+            messagebox.showerror("DB fout", f"Kon PDF export data niet ophalen:\n\n{e}")
+            return
+
+        if not combos:
+            messagebox.showinfo("Info", "Geen records in deze periode om PDF’s te genereren.")
+            return
+
+        ok = 0
+        fail = 0
+        errors = []
+
+        for c in combos:
+            speelweek_id = int(c["speelweek_id"])
+            film_id = int(c["film_id"])
+            zaal = (c.get("zaal") or "").strip()
+
+            try:
+                week_rows = db_fetch_week_sales_for_film_zaal(speelweek_id, film_id, zaal)
+                if not week_rows:
+                    continue
+
+                weeknr = c.get("weeknummer")
+                week_start = c.get("start_datum")
+                film_title = (c.get("maccsbox_titel") or c.get("interne_titel") or "FILM").strip()
+                zaal_part = f"ZAAL_{zaal}" if zaal else "ZAAL_onbekend"
+
+                fname = f"{week_start}_week_{weeknr}_{_safe_filename(film_title)}_{_safe_filename(zaal_part)}_BO1.pdf"
+                out_path = os.path.join(folder, fname)
+
+                generate_borderel_bo1_pdf(out_path, week_rows, btw_rate=btw_rate, auteurs_rate=auteurs_rate)
+                ok += 1
+            except Exception as e:
+                fail += 1
+                errors.append(f"{c.get('interne_titel')} ({zaal}) week {c.get('weeknummer')}: {e}")
+
+        if fail == 0:
+            messagebox.showinfo("Klaar", f"{ok} PDF('s) gegenereerd in:\n{folder}")
+        else:
+            msg = f"{ok} gelukt, {fail} mislukt.\n\nMap:\n{folder}\n\nEerste fouten:\n- " + "\n- ".join(errors[:6])
+            messagebox.showwarning("Klaar (met fouten)", msg)
+
     # -----------------------------
-    # Settings tab
+    # Instellingen tab
     # -----------------------------
     def _build_settings_tab(self):
         frm = ttk.Frame(self.tab_settings)
@@ -1057,24 +1428,41 @@ class SumUpFilmApp:
         self.week_counter_var = tk.StringVar(value="1")
         ttk.Entry(frm, textvariable=self.week_counter_var, width=10).grid(row=1, column=1, sticky="w", pady=6)
 
-        ttk.Button(frm, text="Opslaan", command=self.save_settings).grid(row=2, column=1, sticky="w", pady=(12, 6))
+        # BTW / Auteurs (aanpasbaar)
+        ttk.Label(frm, text="BTW % (bv 5,66):").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
+        self.btw_percent_var = tk.StringVar(value="5,66")
+        ttk.Entry(frm, textvariable=self.btw_percent_var, width=10).grid(row=2, column=1, sticky="w", pady=6)
+
+        ttk.Label(frm, text="Auteursrechten % op NETTO (bv 1,20):").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        self.auteurs_percent_var = tk.StringVar(value="1,20")
+        ttk.Entry(frm, textvariable=self.auteurs_percent_var, width=10).grid(row=3, column=1, sticky="w", pady=6)
+
+        ttk.Button(frm, text="Opslaan", command=self.save_settings).grid(row=4, column=1, sticky="w", pady=(12, 6))
 
         self.settings_status = tk.StringVar(value="")
-        ttk.Label(frm, textvariable=self.settings_status).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(frm, textvariable=self.settings_status).grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         frm.columnconfigure(2, weight=1)
 
     def _load_settings_into_ui(self):
         ws = db_get_week_start_weekday()
         self.weekday_var.set(WEEKDAY_TO_LABEL.get(ws, "Dinsdag"))
+
         wc = db_get_setting("week_counter") or "1"
         self.week_counter_var.set(str(wc))
 
+        btw = db_get_float_setting("btw_rate", DEFAULT_BTW_RATE) * 100.0
+        aut = db_get_float_setting("auteurs_rate", DEFAULT_AUTEURS_RATE) * 100.0
+        self.btw_percent_var.set(f"{btw:.2f}".replace(".", ","))
+        self.auteurs_percent_var.set(f"{aut:.2f}".replace(".", ","))
+
     def save_settings(self):
+        # week start
         lbl = self.weekday_var.get()
         ws = LABEL_TO_WEEKDAY.get(lbl, 1)
         db_set_setting("week_start_weekday", str(ws))
 
+        # week counter
         try:
             wc = int(self.week_counter_var.get().strip())
             if wc < 1:
@@ -1083,6 +1471,19 @@ class SumUpFilmApp:
             messagebox.showerror("Fout", "Week teller moet een positief getal zijn (>= 1).")
             return
         db_set_setting("week_counter", str(wc))
+
+        # btw/auteurs
+        try:
+            btw_rate = _parse_percent_to_rate(self.btw_percent_var.get())
+            aut_rate = _parse_percent_to_rate(self.auteurs_percent_var.get())
+            if btw_rate < 0 or aut_rate < 0:
+                raise ValueError()
+        except Exception:
+            messagebox.showerror("Fout", "BTW% en Auteurs% moeten geldige getallen zijn (bv 5,66 en 1,20).")
+            return
+
+        db_set_float_setting("btw_rate", btw_rate)
+        db_set_float_setting("auteurs_rate", aut_rate)
 
         self.settings_status.set("Instellingen opgeslagen.")
         self.status.set("Instellingen opgeslagen.")
