@@ -31,12 +31,13 @@ POOL = pooling.MySQLConnectionPool(pool_name="cinema_pool", pool_size=5, **DB_CO
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 LOGO_PATH = os.path.join(ASSETS_DIR, "logo.png")
 
-DEFAULT_BTW_RATE = 0.0566      # 5,66% (zoals Excel BO1)
-DEFAULT_AUTEURS_RATE = 0.0120  # 1,20% op NETTO (zoals Excel BO1)
+DEFAULT_BTW_RATE = 0.0566      # 5,66%
+DEFAULT_AUTEURS_RATE = 0.0120  # 1,20% op NETTO
 
 WEEKDAY_LABELS = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
 LABEL_TO_WEEKDAY = {lbl: i for i, lbl in enumerate(WEEKDAY_LABELS)}
 WEEKDAY_TO_LABEL = {i: lbl for i, lbl in enumerate(WEEKDAY_LABELS)}
+
 
 # =========================
 # Helpers
@@ -428,13 +429,6 @@ def db_fetch_week_sales_for_film_zaal(speelweek_id: int, film_id: int, zaal_naam
 # PDF: BO1 layout (zonder ticketnummers)
 # =========================
 def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate: float, auteurs_rate: float):
-    """
-    BO1 layout:
-    - zelfde blokken/labels als Excel BO1 / jouw voorbeeld PDF
-    - ticketnummers (begin/eind) NIET tonen
-    - BTW = bruto * btw_rate
-    - Auteurs = netto * auteurs_rate   (zoals Excel: M31 = M27*1.2%)
-    """
     if not week_rows:
         raise ValueError("Geen data voor deze (speelweek + film + zaal).")
 
@@ -444,242 +438,353 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     land = (meta.get("land_herkomst") or "").strip()
     weeknr = int(meta.get("weeknummer") or 0)
     week_start = meta.get("start_datum")
-    week_end = meta.get("eind_datum")
     zaal = (meta.get("zaal") or "").strip()
 
-    # Startdatum
     if isinstance(week_start, str):
         week_start_d = datetime.strptime(week_start, "%Y-%m-%d").date()
     else:
         week_start_d = week_start
 
-    # Map datum -> row
     rows_by_date = {r["datum"]: r for r in week_rows}
 
-    # Totals
-    gross_total = sum(float(r.get("bedrag_volw") or 0.0) + float(r.get("bedrag_kind") or 0.0) for r in week_rows)
-    tickets_total = sum(int(r.get("aantal_volw") or 0) + int(r.get("aantal_kind") or 0) for r in week_rows)
-
-    btw_total = gross_total * btw_rate
-    netto_total = gross_total - btw_total
-    auteurs_total = netto_total * auteurs_rate
-    verschil = netto_total - (netto_total - auteurs_total)  # = auteurs_total
-
-    # Unit prices (voor BO1 prijs-kolom) -> gemiddeld over week
     volw_qty = sum(int(r.get("aantal_volw") or 0) for r in week_rows)
     kind_qty = sum(int(r.get("aantal_kind") or 0) for r in week_rows)
     volw_amt = sum(float(r.get("bedrag_volw") or 0.0) for r in week_rows)
     kind_amt = sum(float(r.get("bedrag_kind") or 0.0) for r in week_rows)
+
+    gross_total = volw_amt + kind_amt
+    tickets_total = volw_qty + kind_qty
+
+    btw_total = gross_total * btw_rate
+    netto_total = gross_total - btw_total
+    auteurs_total = netto_total * auteurs_rate
+    verschil = netto_total - auteurs_total
+
     volw_price = (volw_amt / volw_qty) if volw_qty else 0.0
     kind_price = (kind_amt / kind_qty) if kind_qty else 0.0
 
-    # PDF
+    def _money(x: float) -> str:
+        return f"{x:.2f}".replace(".", ",")
+
+    def _weekday_full_nl(d: date) -> str:
+        return WEEKDAY_TO_LABEL[d.weekday()]
+
+    # --- PDF canvas ---
     c = canvas.Canvas(output_path, pagesize=A4)
     W, H = A4
-    left = 18 * mm
-    right = W - 18 * mm
-    top = H - 14 * mm
 
-    # Logo
+    def mmx(x): return x * mm
+    def mmy(y): return y * mm
+
+    def rect(x, y, w, h, lw=1):
+        c.setLineWidth(lw)
+        c.rect(mmx(x), mmy(y), mmx(w), mmx(h), stroke=1, fill=0)
+
+    def hline(x1, x2, y, lw=1):
+        c.setLineWidth(lw)
+        c.line(mmx(x1), mmy(y), mmx(x2), mmy(y))
+
+    def vline(x, y1, y2, lw=1):
+        c.setLineWidth(lw)
+        c.line(mmx(x), mmy(y1), mmx(x), mmy(y2))
+
+    def text(x, y, s, font="Helvetica", size=9):
+        c.setFont(font, size)
+        c.drawString(mmx(x), mmy(y), s)
+
+    def textr(x, y, s, font="Helvetica", size=9):
+        c.setFont(font, size)
+        c.drawRightString(mmx(x), mmy(y), s)
+
+    def textc(x, y, s, font="Helvetica", size=9):
+        c.setFont(font, size)
+        c.drawCentredString(mmx(x), mmy(y), s)
+
+    def fit_left(x_mm, y_mm, text_str, max_width_mm, font="Helvetica-Bold", max_size=12, min_size=7):
+        s = (text_str or "").strip()
+        size = max_size
+        while size > min_size:
+            if c.stringWidth(s, font, size) <= mmx(max_width_mm):
+                break
+            size -= 1
+        c.setFont(font, size)
+        c.drawString(mmx(x_mm), mmy(y_mm), s)
+
+    def wrap_lines(text_str: str, font: str, size: int, max_width_mm: float, max_lines: int = 2) -> list[str]:
+        s = (text_str or "").strip()
+        if not s:
+            return [""]
+        words = s.split()
+        lines, cur = [], ""
+        for w in words:
+            test = (cur + " " + w).strip()
+            if c.stringWidth(test, font, size) <= mmx(max_width_mm):
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+                if len(lines) >= max_lines:
+                    break
+        if len(lines) < max_lines and cur:
+            lines.append(cur)
+
+        used_words = " ".join(lines).split()
+        if len(used_words) < len(words):
+            last = lines[-1]
+            ell = "..."
+            while c.stringWidth(last + ell, font, size) > mmx(max_width_mm) and len(last) > 1:
+                last = last[:-1].rstrip()
+            lines[-1] = (last + ell).rstrip()
+
+        return lines[:max_lines]
+
+    # =========================
+    # GRID CONSTANTS (alignment)
+    # =========================
+    PAD_X = 2.0
+    PAD_Y = 2.2
+    LW_OUT = 1.3
+    LW_IN = 1.0
+    LW_THIN = 0.7
+
+    # --- page in mm ---
+    left = 18
+    right = 210 - 18
+    top = 297 - 14
+    bottom = 20
+
+    # ===== Header =====
     if os.path.exists(LOGO_PATH):
         try:
             img = ImageReader(LOGO_PATH)
-            c.drawImage(img, left, top - 26 * mm, width=42 * mm, height=22 * mm, mask="auto")
+            c.drawImage(img, mmx(left), mmy(top - 26), width=mmx(42), height=mmx(22), mask="auto")
         except Exception:
             pass
 
-    # Header rechts van logo
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(left + 48 * mm, top - 5 * mm, "BORDEREL VAN ONTVANGSTEN")
+    c.drawString(mmx(left + 48), mmy(top - 5), "BORDEREL VAN ONTVANGSTEN")
     c.setFont("Helvetica", 9)
-    c.drawString(left + 48 * mm, top - 11 * mm, "Lavendelstraat, 25    9400 NINOVE")
-    c.drawString(left + 48 * mm, top - 16 * mm, "Tel/Fax  : 054/33.10.96  *  054/34.37.57")
-    c.drawString(left + 48 * mm, top - 21 * mm, "RPR  :  BE.0.436.658.564")
-    c.drawString(left + 48 * mm, top - 26 * mm, "facturen@cinemacentral.be")
+    c.drawString(mmx(left + 48), mmy(top - 11), "Lavendelstraat, 25  9400 NINOVE")
+    c.drawString(mmx(left + 48), mmy(top - 16), "Tel/Fax : 054/33.10.96  *  054/34.37.57")
+    c.drawString(mmx(left + 48), mmy(top - 21), "RPR : BE.0.436.658.564")
+    c.drawString(mmx(left + 48), mmy(top - 26), "facturen@cinemacentral.be")
 
-    # Nr repertorium (label)
-    c.setFont("Helvetica", 9)
-    c.drawString(right - 45 * mm, top - 33 * mm, "Nr repertorium")
+    textr(right, top - 26, f"Nr repertorium  {week_start_d.year}  {weeknr}", font="Helvetica", size=9)
 
-    # Datum + zaal
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(left, top - 38 * mm, week_start_d.strftime("%d %b %Y").lower())
-    zaal_label = f"ZAAL {zaal}".strip() if zaal else "ZAAL"
-    c.drawString(left + 60 * mm, top - 38 * mm, zaal_label)
+    c.drawString(mmx(left), mmy(top - 38), f"ZAAL {zaal}".strip())
+    c.drawString(
+        mmx(left + 35),
+        mmy(top - 38),
+        f"Week {week_start_d.strftime('%d %b').lower()} tot {(week_start_d + timedelta(days=6)).strftime('%d %b %Y').lower()}",
+    )
 
-    # Titel
-    c.setFont("Helvetica-Bold", 13)
-    c.drawString(left, top - 50 * mm, "TITEL VAN DE FILM EN VAN DE BIJFILM")
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(left, top - 62 * mm, film_title.upper())
+    # ===== Film header (kader + strak baseline) =====
+    film_x = left
+    film_w = right - left
+    film_h = 22
+    film_y = top - 92
+    rect(film_x, film_y, film_w, film_h, lw=LW_OUT)
 
-    # Week info + codes regel
-    c.setFont("Helvetica", 9)
-    c.drawString(left, top - 72 * mm, f"{week_start_d.year}  |  Week {weeknr}  {week_start} tot {week_end}")
-    c.drawString(left, top - 80 * mm, "Code NATIONALITEIT     Code      Code")
-    c.drawString(left, top - 86 * mm, f"{land} {distributeur}".strip())
+    col_title = 100
+    col_nat = 25
+    col_dist = film_w - col_title - col_nat
 
-    # =============== GEBRUIKTE TICKETS (zonder ticketnummers) ===============
-    y = top - 96 * mm
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(left, y, "GEBRUIKTE  TICKETS")
-    c.drawString(left + 70 * mm, y, "toeschouwers")
-    c.drawString(left + 110 * mm, y, "BTW inbegrepen")
+    vline(film_x + col_title, film_y, film_y + film_h, lw=LW_IN)
+    vline(film_x + col_title + col_nat, film_y, film_y + film_h, lw=LW_IN)
 
-    y -= 7 * mm
-    c.setFont("Helvetica", 9)
-    c.drawString(left + 20 * mm, y, "Aantal")
-    c.drawString(left + 43 * mm, y, "Prijs")
-    c.drawString(left + 70 * mm, y, "Bruto ontvangst")
+    header_h = 6.2
+    hline(film_x, film_x + film_w, film_y + film_h - header_h, lw=LW_IN)
 
-    # Volwassenen
-    y -= 6 * mm
-    c.drawRightString(left + 34 * mm, y, str(volw_qty))
-    c.drawString(left + 36 * mm, y, "x")
-    c.drawRightString(left + 55 * mm, y, _money(volw_price))
-    c.drawRightString(left + 100 * mm, y, _money(volw_amt))
+    textc(film_x + col_title/2, film_y + film_h - 4.7, "TITEL VAN DE FILM EN VAN DE BIJFILM", font="Helvetica-Bold", size=8)
+    textc(film_x + col_title + col_nat/2, film_y + film_h - 4.7, "NATIONALITEIT", font="Helvetica-Bold", size=8)
+    textc(film_x + col_title + col_nat + col_dist/2, film_y + film_h - 4.7, "DISTRIBUTEUR", font="Helvetica-Bold", size=8)
 
-    # Kinderen
-    y -= 6 * mm
-    c.drawRightString(left + 34 * mm, y, str(kind_qty))
-    c.drawString(left + 36 * mm, y, "x")
-    c.drawRightString(left + 55 * mm, y, _money(kind_price))
-    c.drawRightString(left + 100 * mm, y, _money(kind_amt))
+    # content baseline
+    content_base = film_y + PAD_Y + 3.8
+    fit_left(film_x + PAD_X, content_base, film_title.upper(), col_title - 2*PAD_X, font="Helvetica-Bold", max_size=18, min_size=10)
+    fit_left(film_x + col_title + PAD_X, content_base, land, col_nat - 2*PAD_X, font="Helvetica-Bold", max_size=12, min_size=8)
 
-    # Totaal bruto
-    y -= 7 * mm
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(left + 20 * mm, y, "Totaal")
-    c.drawRightString(left + 100 * mm, y, _money(gross_total))
+    # distributeur: wrap + center in cell (no overflow)
+    dist_font = "Helvetica-Bold"
+    dist_size = 10
+    while dist_size >= 7:
+        lines = wrap_lines(distributeur, dist_font, dist_size, col_dist - 2*PAD_X, max_lines=2)
+        if all(c.stringWidth(ln, dist_font, dist_size) <= mmx(col_dist - 2*PAD_X) for ln in lines):
+            break
+        dist_size -= 1
 
-    # Kosteloos label
-    y -= 10 * mm
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(left, y, "Kosteloos")
+    dist_x = film_x + col_title + col_nat + PAD_X
+    c.setFont(dist_font, dist_size)
+    if len(lines) == 1:
+        c.drawString(mmx(dist_x), mmy(content_base), lines[0])
+    else:
+        # 2 lijnen netjes verdeeld binnen content area (film_h - header_h)
+        content_h = film_h - header_h
+        mid = film_y + (content_h / 2.0)
+        c.drawString(mmx(dist_x), mmy(mid + 2.3), lines[0])
+        c.drawString(mmx(dist_x), mmy(mid - 1.7), lines[1])
 
-    # =============== Voorstelling tabel ===============
-    y -= 10 * mm
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(left, y, "Voorstelling")
-    c.drawString(left + 28 * mm, y, "       Betalende")
-    c.drawString(left + 28 * mm, y - 6 * mm, " toeschouwers")
-    c.drawString(left + 70 * mm, y, "Bruto")
-    c.drawString(left + 70 * mm, y - 6 * mm, "ontvangst")
-    c.drawString(left + 118 * mm, y, f"BTW  {btw_rate*100:.2f} %".replace(".", ","))
+    # ===== Linker tabellen (zelfde breedte + strak raster) =====
+    tbl_x = left
+    tbl_w = 120
+    gap = 9.5
 
-    c.setLineWidth(1)
-    c.line(left, y + 4 * mm, right, y + 4 * mm)
+    # ---- Tickets table ----
+    gt_x = tbl_x
+    gt_w = tbl_w
+    gt_h = 20
 
-    # kolomheaders (Aantal / Prijs)
-    y -= 12 * mm
-    c.setFont("Helvetica", 9)
-    c.drawString(left + 28 * mm, y, "Aantal")
-    c.drawString(left + 52 * mm, y, "Prijs")
-    c.drawString(left + 70 * mm, y, "Verton")
-    c.drawString(left + 86 * mm, y, "Dag")
+    # FIX 1: ticketsbox "bovenaan" onder filmheader (niet meer middenin)
+    # film_y = onderkant filmheader box, dus daar net onder gaan zitten
+    gt_y = film_y + 50 - gt_h   # 6.5mm lucht onder filmheader
 
-    # day blocks (7 dagen vanaf week_start)
-    y -= 7 * mm
+    rect(gt_x, gt_y, gt_w, gt_h, lw=LW_OUT)
+    hline(gt_x, gt_x + gt_w, gt_y + gt_h - 6.2, lw=LW_IN)
+    text(gt_x + PAD_X, gt_y + gt_h - 4.9, "GEBRUIKTE  TICKETS", font="Helvetica-Bold", size=9)
 
-    def draw_day_block(day_label: str, av: int, ak: int, gross_v: float, gross_k: float, day_total: float):
-        nonlocal y
-        # volwassenen lijn
-        c.setFont("Helvetica", 9)
-        c.drawString(left, y, day_label)
-        c.drawRightString(left + 44 * mm, y, str(av))
-        c.drawString(left + 45 * mm, y, "x")
-        c.drawRightString(left + 60 * mm, y, _money(volw_price))
-        c.drawRightString(left + 98 * mm, y, _money(gross_v))
-        y -= 6 * mm
-        # kinderen lijn
-        c.drawRightString(left + 44 * mm, y, str(ak))
-        c.drawString(left + 45 * mm, y, "x")
-        c.drawRightString(left + 60 * mm, y, _money(kind_price))
-        c.drawRightString(left + 98 * mm, y, _money(gross_k))
-        y -= 7 * mm
-        # dag subtotaal (in Excel staat in kolom F als som van E)
-        # we tekenen enkel het dagtotaal rechts (zoals “Dag”)
-        c.drawRightString(left + 98 * mm, y + 7 * mm, "")  # placeholder, keep spacing
-        # BTW kolom: Excel toont enkel 1 totaal BTW bovenaan rechts; in PDF staat enkel BTW% bovenaan.
-        # BO1 in Excel zet totale BTW in M24 en Netto/Auteurs eronder.
-        # Dus per-dag BTW tonen we NIET; enkel totale blok rechts onderaan.
-        # (ruimtelijk klopt dit met BO1)
-        return
+    c_toesch = 30
+    c_prijs = 25
+    c_bruto = gt_w - c_toesch - c_prijs
 
-    # Draw 7 days in BO1 order starting at week_start_d
+    vline(gt_x + c_toesch, gt_y, gt_y + gt_h - 6.2, lw=LW_IN)
+    vline(gt_x + c_toesch + c_prijs, gt_y, gt_y + gt_h - 6.2, lw=LW_IN)
+
+    hline(gt_x, gt_x + gt_w, gt_y + gt_h - 13.0, lw=LW_THIN)
+    textc(gt_x + c_toesch/2, gt_y + gt_h - 11.3, "toeschouwers", size=7)
+    textc(gt_x + c_toesch + c_prijs/2, gt_y + gt_h - 11.3, "Prijs", size=7)
+    textc(gt_x + c_toesch + c_prijs + c_bruto/2, gt_y + gt_h - 11.3, "Bruto ontvangst", size=7)
+    textc(gt_x + c_toesch + c_prijs + c_bruto/2, gt_y + gt_h - 15.0, "BTW inbegrepen", size=7)
+
+    hline(gt_x, gt_x + gt_w, gt_y + 12.0, lw=LW_THIN)
+
+    # baselines in cell
+    y_volw = gt_y + 16.0
+    y_kind = gt_y + 6.0
+    textc(gt_x + c_toesch/2, y_volw, str(volw_qty), size=9)
+    textr(gt_x + c_toesch + c_prijs - PAD_X, y_volw, _money(volw_price), size=9)
+    textr(gt_x + gt_w - PAD_X, y_volw, _money(volw_amt), size=9)
+
+    textc(gt_x + c_toesch/2, y_kind, str(kind_qty), size=9)
+    textr(gt_x + c_toesch + c_prijs - PAD_X, y_kind, _money(kind_price), size=9)
+    textr(gt_x + gt_w - PAD_X, y_kind, _money(kind_amt), size=9)
+
+    # totaal box
+    tot_h = 8
+    tot_y = gt_y - 8.2
+    rect(gt_x, tot_y, gt_w, tot_h, lw=LW_OUT)
+    vline(gt_x + 70, tot_y, tot_y + tot_h, lw=LW_IN)
+    text(gt_x + PAD_X, tot_y + 2.6, "Totaal toeschouwers", font="Helvetica-Bold", size=8)
+    textc(gt_x + 60, tot_y + 2.6, str(tickets_total), font="Helvetica-Bold", size=9)
+    text(gt_x + 72, tot_y + 2.6, "Totaal", font="Helvetica-Bold", size=8)
+    textr(gt_x + gt_w - PAD_X, tot_y + 2.6, _money(gross_total), font="Helvetica-Bold", size=9)
+
+    # ---- Voorstelling table ----
+    vt_x = tbl_x
+    vt_w = tbl_w
+    vt_h = 125
+    vt_y = bottom + 35
+
+    rect(vt_x, vt_y, vt_w, vt_h, lw=LW_OUT)
+
+    v0, v1, v2, v3 = 28, 18, 20, 22
+    v4 = vt_w - (v0 + v1 + v2 + v3)
+
+    vline(vt_x + v0, vt_y, vt_y + vt_h, lw=LW_IN)
+    vline(vt_x + v0 + v1, vt_y, vt_y + vt_h, lw=LW_IN)
+    vline(vt_x + v0 + v1 + v2, vt_y, vt_y + vt_h, lw=LW_IN)
+    vline(vt_x + v0 + v1 + v2 + v3, vt_y, vt_y + vt_h, lw=LW_IN)
+
+    hline(vt_x, vt_x + vt_w, vt_y + vt_h - 16, lw=LW_IN)
+    textc(vt_x + v0/2, vt_y + vt_h - 7, "Voorstelling", font="Helvetica-Bold", size=8)
+    textc(vt_x + v0 + (v1+v2)/2, vt_y + vt_h - 7, "Betalende\n toeschouwers", font="Helvetica-Bold", size=7)
+    textc(vt_x + v0 + v1 + v2 + (v3+v4)/2, vt_y + vt_h - 7, "Bruto\n ontvangst", font="Helvetica-Bold", size=7)
+
+    hline(vt_x, vt_x + vt_w, vt_y + vt_h - 24, lw=LW_THIN)
+    textc(vt_x + v0 + v1/2, vt_y + vt_h - 21, "Aantal", font="Helvetica-Bold", size=7)
+    textc(vt_x + v0 + v1 + v2/2, vt_y + vt_h - 21, "Prijs", font="Helvetica-Bold", size=7)
+    textc(vt_x + v0 + v1 + v2 + v3/2, vt_y + vt_h - 21, "Verton", font="Helvetica-Bold", size=7)
+    textc(vt_x + v0 + v1 + v2 + v3 + v4/2, vt_y + vt_h - 21, "Dag", font="Helvetica-Bold", size=7)
+
+    y = vt_y + vt_h - 24
+    row_h = 12
     for i in range(7):
         d = week_start_d + timedelta(days=i)
         r = rows_by_date.get(d)
-
         av = int(r.get("aantal_volw") or 0) if r else 0
         ak = int(r.get("aantal_kind") or 0) if r else 0
         gv = float(r.get("bedrag_volw") or 0.0) if r else 0.0
         gk = float(r.get("bedrag_kind") or 0.0) if r else 0.0
         day_total = gv + gk
 
-        draw_day_block(_weekday_full_nl(d), av, ak, gv, gk, day_total)
+        y -= row_h
+        hline(vt_x, vt_x + vt_w, y, lw=0.6)
 
-    # Subtotaal
-    c.setLineWidth(0.8)
-    c.line(left, y + 3 * mm, left + 100 * mm, y + 3 * mm)
+        text(vt_x + PAD_X, y + 7.2, _weekday_full_nl(d), size=8)
+        # volw baseline
+        textr(vt_x + v0 + v1 - PAD_X, y + 8.5, str(av), size=8)
+        textr(vt_x + v0 + v1 + v2 - PAD_X, y + 8.5, _money(volw_price), size=8)
+        textr(vt_x + v0 + v1 + v2 + v3 - PAD_X, y + 8.5, _money(gv), size=8)
+        # kind baseline
+        textr(vt_x + v0 + v1 - PAD_X, y + 3.0, str(ak), size=8)
+        textr(vt_x + v0 + v1 + v2 - PAD_X, y + 3.0, _money(kind_price), size=8)
+        textr(vt_x + v0 + v1 + v2 + v3 - PAD_X, y + 3.0, _money(gk), size=8)
+        textr(vt_x + vt_w - PAD_X, y + 3.0, _money(day_total), size=8)
 
-    y -= 2 * mm
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(left, y, "Subtotaal")
-    c.drawRightString(left + 44 * mm, y, str(volw_qty))
-    c.drawString(left + 45 * mm, y, "x")
-    c.drawRightString(left + 60 * mm, y, _money(volw_price))
-    c.drawRightString(left + 98 * mm, y, _money(volw_amt))
-    y -= 6 * mm
-    c.drawRightString(left + 44 * mm, y, str(kind_qty))
-    c.drawString(left + 45 * mm, y, "x")
-    c.drawRightString(left + 60 * mm, y, _money(kind_price))
-    c.drawRightString(left + 98 * mm, y, _money(kind_amt))
-    y -= 7 * mm
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(left, y, "TOTAAL")
-    c.drawRightString(left + 44 * mm, y, str(tickets_total))
-    c.drawRightString(left + 98 * mm, y, _money(gross_total))
+    y -= 8
+    hline(vt_x, vt_x + vt_w, y, lw=LW_THIN)
+    text(vt_x + PAD_X, y + 2.5, "Subtotaal", font="Helvetica-Bold", size=8)
+    textr(vt_x + vt_w - PAD_X, y + 2.5, _money(gross_total), font="Helvetica-Bold", size=8)
 
-    # =============== Rechter blok (Bruto/BTW/Netto/Auteurs/Verschil) ===============
-    # Plaats ongeveer zoals in BO1 (kolom M in Excel)
-    x_label = left + 112 * mm
-    x_val = right
+    y -= 8
+    hline(vt_x, vt_x + vt_w, y, lw=LW_IN)
+    text(vt_x + PAD_X, y + 2.0, "TOTAAL", font="Helvetica-Bold", size=9)
+    textr(vt_x + vt_w - PAD_X, y + 2.0, _money(gross_total), font="Helvetica-Bold", size=9)
 
-    # Bruto-ontvangst.
-    c.setFont("Helvetica", 9)
-    c.drawString(x_label, top - 118 * mm, "Bruto-Ontvangst.")
-    c.drawRightString(x_val, top - 118 * mm, _money(gross_total))
+    # ===== Rechterkant berekeningentabel: exact uitlijnen met voorstelling =====
+    rb_x = vt_x + vt_w + 12
+    rb_w = right - rb_x
+    rb_y = vt_y
+    rb_h = vt_h
 
-    # BTW
-    c.drawString(x_label, top - 130 * mm, f"BTW  {btw_rate*100:.2f} %".replace(".", ","))
-    c.drawRightString(x_val, top - 130 * mm, _money(btw_total))
+    rect(rb_x, rb_y, rb_w, rb_h, lw=LW_OUT)
+    label_w = rb_w * 0.62
+    vline(rb_x + label_w, rb_y, rb_y + rb_h, lw=LW_IN)
 
-    # Netto
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(x_label, top - 142 * mm, "Netto-Ontvangst")
-    c.drawRightString(x_val, top - 142 * mm, _money(netto_total))
+    rows = [
+        ("Bruto-Ontvangst.", _money(gross_total), False),
+        (f"BTW {btw_rate*100:.2f} %".replace(".", ","), _money(btw_total), False),
+        ("Netto-Ontvangst", _money(netto_total), True),
+        ("Auteursrechten", _money(auteurs_total), False),
+        ("Verschil", _money(verschil), True),
+    ]
 
-    # Auteursrechten
-    c.setFont("Helvetica", 9)
-    c.drawString(x_label, top - 154 * mm, "Auteursrechten")
-    c.drawRightString(x_val, top - 154 * mm, _money(auteurs_total))
+    row_h2 = rb_h / len(rows)
+    yrow = rb_y + rb_h
+    for i, (lbl, val, bold) in enumerate(rows):
+        yrow -= row_h2
+        if i > 0:
+            hline(rb_x, rb_x + rb_w, yrow, lw=LW_THIN)
 
-    # Verschil
-    c.drawString(x_label, top - 186 * mm, "Verschil")
-    c.drawRightString(x_val, top - 186 * mm, _money(verschil))
+        fnt = "Helvetica-Bold" if bold else "Helvetica"
+        fsz = 10 if bold else 9
+        ty = yrow + (row_h2 / 2) - 2.2  # baseline correction
 
-    # =============== Onderste verklaring + handtekening ===============
-    c.setFont("Helvetica", 9)
-    c.drawString(left, 22 * mm, "Te NINOVE")
-    c.drawString(left + 40 * mm, 22 * mm, "Oprecht en  volledig verklaard                      Handtekening,")
-    c.drawRightString(right, 22 * mm, week_start_d.strftime("%d %b %Y").lower())
+        text(rb_x + PAD_X, ty, lbl, font=fnt, size=fsz)
+        textr(rb_x + rb_w - PAD_X, ty, val, font=fnt, size=fsz)
+
+    # ===== Onderlijn =====
+    text(left, bottom + 2, "Te NINOVE", size=9)
+    text(left + 22, bottom + 2, week_start_d.strftime("%d %b %Y").lower(), size=9)
+    text(left + 70, bottom + 2, "Oprecht en volledig verklaard", size=9)
+    textr(right, bottom + 2, "Handtekening,", size=9)
 
     c.save()
 
 
 # =========================
-# Calendar Picker (modal)
+# Calendar Picker (modal) – JOUW EXACTE KALENDER
 # =========================
 class DatePickerDialog(tk.Toplevel):
     def __init__(self, parent, title: str, initial: date):
@@ -770,10 +875,12 @@ class DatePickerDialog(tk.Toplevel):
                         row=r, column=c, padx=2, pady=2
                     )
                     continue
+
                 d = date(self._view_year, self._view_month, day)
                 is_selected = (d == self._sel_date)
                 bg = "red" if is_selected else "white"
                 fg = "black"
+
                 btn = tk.Button(
                     self.grid_frame,
                     text=str(day),
@@ -804,6 +911,7 @@ class DateField(ttk.Frame):
     def __init__(self, parent, label: str, initial: date):
         super().__init__(parent)
         self.var = tk.StringVar(value=initial.strftime("%Y-%m-%d"))
+
         ttk.Label(self, text=label).pack(side="left")
         self.entry = ttk.Entry(self, textvariable=self.var, width=12, state="readonly")
         self.entry.pack(side="left", padx=(6, 6))
@@ -824,7 +932,7 @@ class DateField(ttk.Frame):
 
 
 # =========================
-# UI App
+# UI App (jouw volledige project)
 # =========================
 class SumUpFilmApp:
     def __init__(self, root: tk.Tk):
@@ -905,6 +1013,8 @@ class SumUpFilmApp:
         self.tree.bind("<Double-1>", self._start_edit)
         self.tree.bind("<Button-1>", self._on_left_click, add=True)
         self.tree.bind("<Button-3>", self._on_right_click, add=True)
+        self.tree.bind("<Button-2>", self._on_right_click, add=True)
+        self.tree.bind("<Control-Button-1>", self._on_right_click, add=True)
 
         bottom = ttk.Frame(self.tab_import)
         bottom.pack(fill="x", pady=(10, 0))
@@ -1242,7 +1352,7 @@ class SumUpFilmApp:
         messagebox.showinfo("Export", "CSV succesvol opgeslagen.")
 
     # -----------------------------
-    # Historiek tab + PDF export
+    # Historiek tab + PDF export (met jouw kalender)
     # -----------------------------
     def _build_history_tab(self):
         top = ttk.Frame(self.tab_history)
@@ -1256,7 +1366,6 @@ class SumUpFilmApp:
 
         ttk.Button(top, text="Vernieuwen", command=self.refresh_history).pack(side="left")
         ttk.Button(top, text="Export historiek (CSV)", command=self.export_history_csv).pack(side="left", padx=8)
-
         ttk.Button(top, text="Export PDF's (BO1)", command=self.export_borderels_pdf_bo1).pack(side="left", padx=8)
 
         self.hist_status = tk.StringVar(value="")
@@ -1378,19 +1487,19 @@ class SumUpFilmApp:
         fail = 0
         errors = []
 
-        for c in combos:
-            speelweek_id = int(c["speelweek_id"])
-            film_id = int(c["film_id"])
-            zaal = (c.get("zaal") or "").strip()
+        for c_ in combos:
+            speelweek_id = int(c_["speelweek_id"])
+            film_id = int(c_["film_id"])
+            zaal = (c_.get("zaal") or "").strip()
 
             try:
                 week_rows = db_fetch_week_sales_for_film_zaal(speelweek_id, film_id, zaal)
                 if not week_rows:
                     continue
 
-                weeknr = c.get("weeknummer")
-                week_start = c.get("start_datum")
-                film_title = (c.get("maccsbox_titel") or c.get("interne_titel") or "FILM").strip()
+                weeknr = c_.get("weeknummer")
+                week_start = c_.get("start_datum")
+                film_title = (c_.get("maccsbox_titel") or c_.get("interne_titel") or "FILM").strip()
                 zaal_part = f"ZAAL_{zaal}" if zaal else "ZAAL_onbekend"
 
                 fname = f"{week_start}_week_{weeknr}_{_safe_filename(film_title)}_{_safe_filename(zaal_part)}_BO1.pdf"
@@ -1400,7 +1509,7 @@ class SumUpFilmApp:
                 ok += 1
             except Exception as e:
                 fail += 1
-                errors.append(f"{c.get('interne_titel')} ({zaal}) week {c.get('weeknummer')}: {e}")
+                errors.append(f"{c_.get('interne_titel')} ({zaal}) week {c_.get('weeknummer')}: {e}")
 
         if fail == 0:
             messagebox.showinfo("Klaar", f"{ok} PDF('s) gegenereerd in:\n{folder}")
@@ -1428,7 +1537,6 @@ class SumUpFilmApp:
         self.week_counter_var = tk.StringVar(value="1")
         ttk.Entry(frm, textvariable=self.week_counter_var, width=10).grid(row=1, column=1, sticky="w", pady=6)
 
-        # BTW / Auteurs (aanpasbaar)
         ttk.Label(frm, text="BTW % (bv 5,66):").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
         self.btw_percent_var = tk.StringVar(value="5,66")
         ttk.Entry(frm, textvariable=self.btw_percent_var, width=10).grid(row=2, column=1, sticky="w", pady=6)
@@ -1457,12 +1565,10 @@ class SumUpFilmApp:
         self.auteurs_percent_var.set(f"{aut:.2f}".replace(".", ","))
 
     def save_settings(self):
-        # week start
         lbl = self.weekday_var.get()
         ws = LABEL_TO_WEEKDAY.get(lbl, 1)
         db_set_setting("week_start_weekday", str(ws))
 
-        # week counter
         try:
             wc = int(self.week_counter_var.get().strip())
             if wc < 1:
@@ -1472,7 +1578,6 @@ class SumUpFilmApp:
             return
         db_set_setting("week_counter", str(wc))
 
-        # btw/auteurs
         try:
             btw_rate = _parse_percent_to_rate(self.btw_percent_var.get())
             aut_rate = _parse_percent_to_rate(self.auteurs_percent_var.get())
