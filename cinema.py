@@ -425,6 +425,123 @@ def db_fetch_week_sales_for_film_zaal(speelweek_id: int, film_id: int, zaal_naam
         conn.close()
 
 
+# =========================================================
+# PDF helper: "GEBRUIKTE TICKETS" tabel van scratch (jouw screenshot)
+# =========================================================
+def draw_used_tickets_table_bo1(
+    c,
+    *,
+    x_mm: float,
+    y_mm: float,
+    w_mm: float,
+    volw_qty: int,
+    kind_qty: int,
+    volw_price: float,
+    kind_price: float,
+    volw_amt: float,
+    kind_amt: float,
+    tickets_total: int,
+    gross_total: float,
+    outer_lw: float = 1.8,
+    inner_lw: float = 1.4,
+):
+    def mmx(v): return v * mm
+    def X(v): return mmx(x_mm + v)
+    def Y(v): return mmx(y_mm + v)
+
+    def money(v: float) -> str:
+        return f"{v:.2f}".replace(".", ",")
+
+    def rect(x, y, w, h, lw):
+        c.setLineWidth(lw)
+        c.rect(X(x), Y(y), mmx(w), mmx(h), stroke=1, fill=0)
+
+    def hline(x1, x2, y, lw):
+        c.setLineWidth(lw)
+        c.line(X(x1), Y(y), X(x2), Y(y))
+
+    def vline(x, y1, y2, lw):
+        c.setLineWidth(lw)
+        c.line(X(x), Y(y1), X(x), Y(y2))
+
+    def text_left(x, y, s, font="Helvetica", size=10):
+        c.setFont(font, size)
+        c.drawString(X(x), Y(y), s)
+
+    def text_center(x, y, s, font="Helvetica", size=10):
+        c.setFont(font, size)
+        c.drawCentredString(X(x), Y(y), s)
+
+    def text_right(x, y, s, font="Helvetica", size=10):
+        c.setFont(font, size)
+        c.drawRightString(X(x), Y(y), s)
+
+    # --- SMALLER table (was 18/20/9/9 => now tighter) ---
+    h_header = 14.0
+    h_body = 16.0
+    h_footer1 = 7.5
+    h_footer2 = 7.5
+    h_total = h_header + h_body + h_footer1 + h_footer2
+
+    # columns unchanged
+    w_left = w_mm * 0.58
+    w_mid = w_mm * 0.20
+    w_right = w_mm - w_left - w_mid
+    w_left_label = w_left * 0.68
+
+    pad_r = 1.5  # slightly tighter
+
+    # frame
+    rect(0, 0, w_mm, h_total, outer_lw)
+
+    # horizontal lines
+    y_footer2_top = h_footer2
+    y_footer1_top = h_footer2 + h_footer1
+    y_body_top = h_footer2 + h_footer1 + h_body
+
+    hline(0, w_mm, y_footer2_top, inner_lw)
+    hline(0, w_mm, y_footer1_top, inner_lw)
+    hline(0, w_mm, y_body_top, inner_lw)
+
+    # vertical lines
+    vline(w_left, 0, h_total, inner_lw)
+    vline(w_left + w_mid, 0, h_total, inner_lw)
+    vline(w_left_label, h_footer2, h_footer2 + h_footer1, inner_lw)
+
+    # --- HEADER (smaller fonts) ---
+    header_y0 = y_body_top
+    text_center(w_left / 2, header_y0 + 9.5, "Aantal", font="Helvetica", size=9)
+    text_center(w_left / 2, header_y0 + 3.2, "toeschouwers", font="Helvetica", size=9)
+
+    text_center(w_left + w_mid / 2, header_y0 + 6.3, "Prijs", font="Helvetica-Bold", size=9)
+
+    text_center(w_left + w_mid + w_right / 2, header_y0 + 9.5, "Bruto ontvangst", font="Helvetica", size=9)
+    text_center(w_left + w_mid + w_right / 2, header_y0 + 3.2, "BTW inbegrepen", font="Helvetica", size=9)
+
+    # --- BODY (smaller fonts + reposition) ---
+    row1_y = y_footer1_top + 10.0
+    row2_y = y_footer1_top + 3.5
+
+    text_right(w_left - pad_r, row1_y, str(int(volw_qty)), font="Helvetica", size=9)
+    text_right(w_left - pad_r, row2_y, str(int(kind_qty)), font="Helvetica", size=9)
+
+    text_right(w_left + w_mid - pad_r, row1_y, money(volw_price), font="Helvetica", size=9)
+    text_right(w_left + w_mid - pad_r, row2_y, money(kind_price), font="Helvetica", size=9)
+
+    text_right(w_mm - pad_r, row1_y, money(volw_amt), font="Helvetica", size=9)
+    text_right(w_mm - pad_r, row2_y, money(kind_amt), font="Helvetica", size=9)
+
+    # --- FOOTER1 (smaller fonts) ---
+    f1_y = h_footer2
+    text_left(2.0, f1_y + 2.2, "toeschouwers", font="Helvetica-Bold", size=9)
+    text_right(w_left - pad_r, f1_y + 2.4, str(int(tickets_total)), font="Helvetica", size=9)
+    text_center(w_left + w_mid / 2, f1_y + 2.4, "Totaal", font="Helvetica", size=9)
+    text_right(w_mm - pad_r, f1_y + 2.4, money(gross_total), font="Helvetica", size=9)
+
+    # --- FOOTER2 ---
+    text_center(w_left + w_mid / 2, 2.2, "Kosteloos", font="Helvetica", size=9)
+
+
 # =========================
 # PDF: BO1 layout (zonder ticketnummers)
 # =========================
@@ -463,18 +580,12 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     volw_price = (volw_amt / volw_qty) if volw_qty else 0.0
     kind_price = (kind_amt / kind_qty) if kind_qty else 0.0
 
-    def _money(x: float) -> str:
-        return f"{x:.2f}".replace(".", ",")
-
-    def _weekday_full_nl(d: date) -> str:
-        return WEEKDAY_TO_LABEL[d.weekday()]
+    def mmx(x): return x * mm
+    def mmy(y): return y * mm
 
     # --- PDF canvas ---
     c = canvas.Canvas(output_path, pagesize=A4)
     W, H = A4
-
-    def mmx(x): return x * mm
-    def mmy(y): return y * mm
 
     def rect(x, y, w, h, lw=1):
         c.setLineWidth(lw)
@@ -499,6 +610,14 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     def textc(x, y, s, font="Helvetica", size=9):
         c.setFont(font, size)
         c.drawCentredString(mmx(x), mmy(y), s)
+
+    # Fix voor headers: GEEN "\n" in drawCentredString -> zelf multi-line tekenen
+    def textc_multiline(x_center_mm, y_top_mm, lines, font="Helvetica-Bold", size=8, leading_mm=3.2):
+        c.setFont(font, size)
+        y = y_top_mm
+        for ln in lines:
+            c.drawCentredString(mmx(x_center_mm), mmy(y), ln)
+            y -= leading_mm
 
     def fit_left(x_mm, y_mm, text_str, max_width_mm, font="Helvetica-Bold", max_size=12, min_size=7):
         s = (text_str or "").strip()
@@ -540,7 +659,7 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
         return lines[:max_lines]
 
     # =========================
-    # GRID CONSTANTS (alignment)
+    # GRID CONSTANTS
     # =========================
     PAD_X = 2.0
     PAD_Y = 2.2
@@ -570,6 +689,7 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     c.drawString(mmx(left + 48), mmy(top - 21), "RPR : BE.0.436.658.564")
     c.drawString(mmx(left + 48), mmy(top - 26), "facturen@cinemacentral.be")
 
+    # Nr repertorium rechts
     textr(right, top - 26, f"Nr repertorium  {week_start_d.year}  {weeknr}", font="Helvetica", size=9)
 
     c.setFont("Helvetica-Bold", 11)
@@ -580,11 +700,12 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
         f"Week {week_start_d.strftime('%d %b').lower()} tot {(week_start_d + timedelta(days=6)).strftime('%d %b %Y').lower()}",
     )
 
-    # ===== Film header (kader + strak baseline) =====
+    # ===== Film header =====
+    FILMBOX_DROP_MM=-30.0  # afstand tussen de bovenkant van de filmheader en de header van de pagina
     film_x = left
     film_w = right - left
     film_h = 22
-    film_y = top - 92
+    film_y = top - 92 - FILMBOX_DROP_MM
     rect(film_x, film_y, film_w, film_h, lw=LW_OUT)
 
     col_title = 100
@@ -601,12 +722,11 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     textc(film_x + col_title + col_nat/2, film_y + film_h - 4.7, "NATIONALITEIT", font="Helvetica-Bold", size=8)
     textc(film_x + col_title + col_nat + col_dist/2, film_y + film_h - 4.7, "DISTRIBUTEUR", font="Helvetica-Bold", size=8)
 
-    # content baseline
     content_base = film_y + PAD_Y + 3.8
     fit_left(film_x + PAD_X, content_base, film_title.upper(), col_title - 2*PAD_X, font="Helvetica-Bold", max_size=18, min_size=10)
     fit_left(film_x + col_title + PAD_X, content_base, land, col_nat - 2*PAD_X, font="Helvetica-Bold", max_size=12, min_size=8)
 
-    # distributeur: wrap + center in cell (no overflow)
+    # distributeur: wrap + geen overflow
     dist_font = "Helvetica-Bold"
     dist_size = 10
     while dist_size >= 7:
@@ -620,74 +740,48 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     if len(lines) == 1:
         c.drawString(mmx(dist_x), mmy(content_base), lines[0])
     else:
-        # 2 lijnen netjes verdeeld binnen content area (film_h - header_h)
         content_h = film_h - header_h
         mid = film_y + (content_h / 2.0)
         c.drawString(mmx(dist_x), mmy(mid + 2.3), lines[0])
         c.drawString(mmx(dist_x), mmy(mid - 1.7), lines[1])
 
-    # ===== Linker tabellen (zelfde breedte + strak raster) =====
+    # ===== Linker tabellen =====
     tbl_x = left
     tbl_w = 120
-    gap = 9.5
 
-    # ---- Tickets table ----
+    # ---- Tickets table (NIEUW van scratch) ----
+    # Plaats: direct onder filmheader met consistente marge
     gt_x = tbl_x
     gt_w = tbl_w
-    gt_h = 20
-
-    # FIX 1: ticketsbox "bovenaan" onder filmheader (niet meer middenin)
-    # film_y = onderkant filmheader box, dus daar net onder gaan zitten
-    gt_y = film_y + 50 - gt_h   # 6.5mm lucht onder filmheader
-
-    rect(gt_x, gt_y, gt_w, gt_h, lw=LW_OUT)
-    hline(gt_x, gt_x + gt_w, gt_y + gt_h - 6.2, lw=LW_IN)
-    text(gt_x + PAD_X, gt_y + gt_h - 4.9, "GEBRUIKTE  TICKETS", font="Helvetica-Bold", size=9)
-
-    c_toesch = 30
-    c_prijs = 25
-    c_bruto = gt_w - c_toesch - c_prijs
-
-    vline(gt_x + c_toesch, gt_y, gt_y + gt_h - 6.2, lw=LW_IN)
-    vline(gt_x + c_toesch + c_prijs, gt_y, gt_y + gt_h - 6.2, lw=LW_IN)
-
-    hline(gt_x, gt_x + gt_w, gt_y + gt_h - 13.0, lw=LW_THIN)
-    textc(gt_x + c_toesch/2, gt_y + gt_h - 11.3, "toeschouwers", size=7)
-    textc(gt_x + c_toesch + c_prijs/2, gt_y + gt_h - 11.3, "Prijs", size=7)
-    textc(gt_x + c_toesch + c_prijs + c_bruto/2, gt_y + gt_h - 11.3, "Bruto ontvangst", size=7)
-    textc(gt_x + c_toesch + c_prijs + c_bruto/2, gt_y + gt_h - 15.0, "BTW inbegrepen", size=7)
-
-    hline(gt_x, gt_x + gt_w, gt_y + 12.0, lw=LW_THIN)
-
-    # baselines in cell
-    y_volw = gt_y + 16.0
-    y_kind = gt_y + 6.0
-    textc(gt_x + c_toesch/2, y_volw, str(volw_qty), size=9)
-    textr(gt_x + c_toesch + c_prijs - PAD_X, y_volw, _money(volw_price), size=9)
-    textr(gt_x + gt_w - PAD_X, y_volw, _money(volw_amt), size=9)
-
-    textc(gt_x + c_toesch/2, y_kind, str(kind_qty), size=9)
-    textr(gt_x + c_toesch + c_prijs - PAD_X, y_kind, _money(kind_price), size=9)
-    textr(gt_x + gt_w - PAD_X, y_kind, _money(kind_amt), size=9)
-
-    # totaal box
-    tot_h = 8
-    tot_y = gt_y - 8.2
-    rect(gt_x, tot_y, gt_w, tot_h, lw=LW_OUT)
-    vline(gt_x + 70, tot_y, tot_y + tot_h, lw=LW_IN)
-    text(gt_x + PAD_X, tot_y + 2.6, "Totaal toeschouwers", font="Helvetica-Bold", size=8)
-    textc(gt_x + 60, tot_y + 2.6, str(tickets_total), font="Helvetica-Bold", size=9)
-    text(gt_x + 72, tot_y + 2.6, "Totaal", font="Helvetica-Bold", size=8)
-    textr(gt_x + gt_w - PAD_X, tot_y + 2.6, _money(gross_total), font="Helvetica-Bold", size=9)
+    gt_y = film_y - 50.0  # <-- pas dit aan indien je 'm hoger/lager wil
+    draw_used_tickets_table_bo1(
+        c,
+        x_mm=gt_x,
+        y_mm=gt_y,
+        w_mm=gt_w,
+        volw_qty=volw_qty,
+        kind_qty=kind_qty,
+        volw_price=volw_price,
+        kind_price=kind_price,
+        volw_amt=volw_amt,
+        kind_amt=kind_amt,
+        tickets_total=tickets_total,
+        gross_total=gross_total,
+        outer_lw=2.2,
+        inner_lw=1.8,
+    )
 
     # ---- Voorstelling table ----
+    TABLES_DROP_MM = 15.0 # afstand tussen de twee tabellen (was 15.0, nu iets minder)
     vt_x = tbl_x
     vt_w = tbl_w
     vt_h = 125
-    vt_y = bottom + 35
+    vt_y = bottom + 35 - TABLES_DROP_MM
 
     rect(vt_x, vt_y, vt_w, vt_h, lw=LW_OUT)
 
+    # kolommen:
+    # Voorstelling | (Betalende toeschouwers: Aantal + Prijs) | (Bruto ontvangst: Opstelsom + Som)
     v0, v1, v2, v3 = 28, 18, 20, 22
     v4 = vt_w - (v0 + v1 + v2 + v3)
 
@@ -696,16 +790,19 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     vline(vt_x + v0 + v1 + v2, vt_y, vt_y + vt_h, lw=LW_IN)
     vline(vt_x + v0 + v1 + v2 + v3, vt_y, vt_y + vt_h, lw=LW_IN)
 
+    # headerband (2 lagen)
     hline(vt_x, vt_x + vt_w, vt_y + vt_h - 16, lw=LW_IN)
-    textc(vt_x + v0/2, vt_y + vt_h - 7, "Voorstelling", font="Helvetica-Bold", size=8)
-    textc(vt_x + v0 + (v1+v2)/2, vt_y + vt_h - 7, "Betalende\n toeschouwers", font="Helvetica-Bold", size=7)
-    textc(vt_x + v0 + v1 + v2 + (v3+v4)/2, vt_y + vt_h - 7, "Bruto\n ontvangst", font="Helvetica-Bold", size=7)
+
+    textc(vt_x + v0/2, vt_y + vt_h - 7.2, "Voorstelling", font="Helvetica-Bold", size=8)
+    textc_multiline(vt_x + v0 + (v1+v2)/2, vt_y + vt_h - 6.0, ["Betalende", "toeschouwers"], font="Helvetica-Bold", size=7, leading_mm=3.0)
+    textc_multiline(vt_x + v0 + v1 + v2 + (v3+v4)/2, vt_y + vt_h - 6.0, ["Bruto", "ontvangst"], font="Helvetica-Bold", size=7, leading_mm=3.0)
 
     hline(vt_x, vt_x + vt_w, vt_y + vt_h - 24, lw=LW_THIN)
+
     textc(vt_x + v0 + v1/2, vt_y + vt_h - 21, "Aantal", font="Helvetica-Bold", size=7)
     textc(vt_x + v0 + v1 + v2/2, vt_y + vt_h - 21, "Prijs", font="Helvetica-Bold", size=7)
-    textc(vt_x + v0 + v1 + v2 + v3/2, vt_y + vt_h - 21, "Verton", font="Helvetica-Bold", size=7)
-    textc(vt_x + v0 + v1 + v2 + v3 + v4/2, vt_y + vt_h - 21, "Dag", font="Helvetica-Bold", size=7)
+    textc(vt_x + v0 + v1 + v2 + v3/2, vt_y + vt_h - 21, "Opstelsom", font="Helvetica-Bold", size=7)
+    textc(vt_x + v0 + v1 + v2 + v3 + v4/2, vt_y + vt_h - 21, "Som", font="Helvetica-Bold", size=7)
 
     y = vt_y + vt_h - 24
     row_h = 12
@@ -722,14 +819,15 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
         hline(vt_x, vt_x + vt_w, y, lw=0.6)
 
         text(vt_x + PAD_X, y + 7.2, _weekday_full_nl(d), size=8)
-        # volw baseline
+
         textr(vt_x + v0 + v1 - PAD_X, y + 8.5, str(av), size=8)
         textr(vt_x + v0 + v1 + v2 - PAD_X, y + 8.5, _money(volw_price), size=8)
         textr(vt_x + v0 + v1 + v2 + v3 - PAD_X, y + 8.5, _money(gv), size=8)
-        # kind baseline
+
         textr(vt_x + v0 + v1 - PAD_X, y + 3.0, str(ak), size=8)
         textr(vt_x + v0 + v1 + v2 - PAD_X, y + 3.0, _money(kind_price), size=8)
         textr(vt_x + v0 + v1 + v2 + v3 - PAD_X, y + 3.0, _money(gk), size=8)
+
         textr(vt_x + vt_w - PAD_X, y + 3.0, _money(day_total), size=8)
 
     y -= 8
@@ -742,7 +840,7 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     text(vt_x + PAD_X, y + 2.0, "TOTAAL", font="Helvetica-Bold", size=9)
     textr(vt_x + vt_w - PAD_X, y + 2.0, _money(gross_total), font="Helvetica-Bold", size=9)
 
-    # ===== Rechterkant berekeningentabel: exact uitlijnen met voorstelling =====
+    # ===== Rechterkant berekeningentabel =====
     rb_x = vt_x + vt_w + 12
     rb_w = right - rb_x
     rb_y = vt_y
@@ -753,24 +851,21 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     vline(rb_x + label_w, rb_y, rb_y + rb_h, lw=LW_IN)
 
     rows = [
-        ("Bruto-Ontvangst.", _money(gross_total), False),
-        (f"BTW {btw_rate*100:.2f} %".replace(".", ","), _money(btw_total), False),
-        ("Netto-Ontvangst", _money(netto_total), True),
-        ("Auteursrechten", _money(auteurs_total), False),
-        ("Verschil", _money(verschil), True),
+        ("Bruto-Ontvangst.", _money(gross_total), "Helvetica", 9),
+        (f"BTW {btw_rate*100:.2f} %".replace(".", ","), _money(btw_total), "Helvetica", 9),
+        ("Netto-Ontvangst", _money(netto_total), "Helvetica-Bold", 8),  # kleiner
+        ("Auteursrechten", _money(auteurs_total), "Helvetica", 9),
+        ("Verschil", _money(verschil), "Helvetica-Bold", 10),
     ]
 
     row_h2 = rb_h / len(rows)
     yrow = rb_y + rb_h
-    for i, (lbl, val, bold) in enumerate(rows):
+    for i, (lbl, val, fnt, fsz) in enumerate(rows):
         yrow -= row_h2
         if i > 0:
             hline(rb_x, rb_x + rb_w, yrow, lw=LW_THIN)
 
-        fnt = "Helvetica-Bold" if bold else "Helvetica"
-        fsz = 10 if bold else 9
-        ty = yrow + (row_h2 / 2) - 2.2  # baseline correction
-
+        ty = yrow + (row_h2 / 2) - 2.2
         text(rb_x + PAD_X, ty, lbl, font=fnt, size=fsz)
         textr(rb_x + rb_w - PAD_X, ty, val, font=fnt, size=fsz)
 
@@ -1291,7 +1386,6 @@ class SumUpFilmApp:
 
         values = list(self.tree.item(item, "values"))
 
-        # columns: 0 Film, 1 Zaal, 2 3D, 3 av, 4 ak, 5 bv, 6 bk, 7 ta, 8 tb
         if col_name == "Aantal volwassenen":
             index_aantal = 3
             index_bedrag = 5
@@ -1391,16 +1485,16 @@ class SumUpFilmApp:
         )
 
         self.hist_tree = ttk.Treeview(mid, columns=self.hist_cols, show="headings")
-        for c in self.hist_cols:
-            self.hist_tree.heading(c, text=c)
-            if c == "Film":
-                self.hist_tree.column(c, width=320, anchor="w")
-            elif c == "Zaal":
-                self.hist_tree.column(c, width=110, anchor="center")
-            elif c == "3D":
-                self.hist_tree.column(c, width=60, anchor="center")
+        for ccol in self.hist_cols:
+            self.hist_tree.heading(ccol, text=ccol)
+            if ccol == "Film":
+                self.hist_tree.column(ccol, width=320, anchor="w")
+            elif ccol == "Zaal":
+                self.hist_tree.column(ccol, width=110, anchor="center")
+            elif ccol == "3D":
+                self.hist_tree.column(ccol, width=60, anchor="center")
             else:
-                self.hist_tree.column(c, width=130, anchor="center")
+                self.hist_tree.column(ccol, width=130, anchor="center")
 
         vsb = ttk.Scrollbar(mid, orient="vertical", command=self.hist_tree.yview)
         self.hist_tree.configure(yscrollcommand=vsb.set)
@@ -1490,26 +1584,26 @@ class SumUpFilmApp:
         for c_ in combos:
             speelweek_id = int(c_["speelweek_id"])
             film_id = int(c_["film_id"])
-            zaal = (c_.get("zaal") or "").strip()
+            zaal_naam = (c_.get("zaal") or "").strip()
 
             try:
-                week_rows = db_fetch_week_sales_for_film_zaal(speelweek_id, film_id, zaal)
+                week_rows = db_fetch_week_sales_for_film_zaal(speelweek_id, film_id, zaal_naam)
                 if not week_rows:
                     continue
 
-                weeknr = c_.get("weeknummer")
-                week_start = c_.get("start_datum")
-                film_title = (c_.get("maccsbox_titel") or c_.get("interne_titel") or "FILM").strip()
-                zaal_part = f"ZAAL_{zaal}" if zaal else "ZAAL_onbekend"
+                weeknr_ = c_.get("weeknummer")
+                week_start_ = c_.get("start_datum")
+                film_title_ = (c_.get("maccsbox_titel") or c_.get("interne_titel") or "FILM").strip()
+                zaal_part = f"ZAAL_{zaal_naam}" if zaal_naam else "ZAAL_onbekend"
 
-                fname = f"{week_start}_week_{weeknr}_{_safe_filename(film_title)}_{_safe_filename(zaal_part)}_BO1.pdf"
+                fname = f"{week_start_}_week_{weeknr_}_{_safe_filename(film_title_)}_{_safe_filename(zaal_part)}_BO1.pdf"
                 out_path = os.path.join(folder, fname)
 
                 generate_borderel_bo1_pdf(out_path, week_rows, btw_rate=btw_rate, auteurs_rate=auteurs_rate)
                 ok += 1
             except Exception as e:
                 fail += 1
-                errors.append(f"{c_.get('interne_titel')} ({zaal}) week {c_.get('weeknummer')}: {e}")
+                errors.append(f"{c_.get('interne_titel')} ({zaal_naam}) week {c_.get('weeknummer')}: {e}")
 
         if fail == 0:
             messagebox.showinfo("Klaar", f"{ok} PDF('s) gegenereerd in:\n{folder}")
