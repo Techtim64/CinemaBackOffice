@@ -1,8 +1,3 @@
-# =========================
-# Cinema BackOffice – SumUp Filmrapport
-# COPY/PASTE VOLLEDIGE FILE
-# =========================
-
 import os
 import re
 import tkinter as tk
@@ -111,7 +106,22 @@ def _parse_percent_to_rate(s: str) -> float:
 
 
 def calc_ticket_end(begin: int, qty: int) -> int:
+    # bij qty=0 => eind = begin - 1 (zoals borderel stijl)
     return begin + qty - 1 if qty > 0 else begin - 1
+
+
+def speelweek_range(d: date, week_start_weekday: int) -> tuple[date, date]:
+    weekday = d.weekday()
+    days_since_start = (weekday - week_start_weekday) % 7
+    start = d - timedelta(days=days_since_start)
+    end = start + timedelta(days=7)  # end exclusive
+    return start, end
+
+
+def current_speelweek_dates(today: date) -> tuple[date, date]:
+    ws = db_get_week_start_weekday()
+    start, end = speelweek_range(today, ws)
+    return start, end - timedelta(days=1)  # inclusive end
 
 
 # =========================
@@ -190,20 +200,6 @@ def db_get_week_start_weekday() -> int:
     return 1
 
 
-def speelweek_range(d: date, week_start_weekday: int) -> tuple[date, date]:
-    weekday = d.weekday()
-    days_since_start = (weekday - week_start_weekday) % 7
-    start = d - timedelta(days=days_since_start)
-    end = start + timedelta(days=7)  # end exclusive
-    return start, end
-
-
-def current_speelweek_dates(today: date) -> tuple[date, date]:
-    ws = db_get_week_start_weekday()
-    start, end = speelweek_range(today, ws)
-    return start, end - timedelta(days=1)  # inclusive end
-
-
 def db_get_or_create_speelweek(d: date) -> tuple[int, int]:
     week_start = db_get_week_start_weekday()
     start, end = speelweek_range(d, week_start)
@@ -234,6 +230,16 @@ def db_get_or_create_speelweek(d: date) -> tuple[int, int]:
 
         db_set_setting("week_counter", str(weeknummer + 1))
         return int(speelweek_id), weeknummer
+    finally:
+        conn.close()
+
+
+def db_update_speelweek_weeknummer(speelweek_id: int, new_weeknr: int) -> None:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE speelweek SET weeknummer=%s WHERE id=%s", (int(new_weeknr), int(speelweek_id)))
+        conn.commit()
     finally:
         conn.close()
 
@@ -349,10 +355,52 @@ def db_upsert_daily_sales(
         conn.close()
 
 
+def db_sum_paid_qty_for_speelweek(speelweek_id: int, film_id: int, zaal_id: int | None) -> tuple[int, int]:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              COALESCE(SUM(aantal_volw),0) AS sv,
+              COALESCE(SUM(aantal_kind),0) AS sk
+            FROM daily_sales
+            WHERE speelweek_id=%s
+              AND film_id=%s
+              AND COALESCE(zaal_id,0)=COALESCE(%s,0)
+            """,
+            (speelweek_id, film_id, zaal_id),
+        )
+        row = cur.fetchone()
+        return int(row[0] or 0), int(row[1] or 0)
+    finally:
+        conn.close()
+
+
+def _insert_ticket_range(conn, speelweek_id: int, film_id: int, zaal_id: int | None, begin_volw: int, begin_kind: int):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO ticket_ranges(speelweek_id, film_id, zaal_id, begin_volw, begin_kind)
+        VALUES(%s,%s,%s,%s,%s)
+        """,
+        (speelweek_id, film_id, zaal_id, int(begin_volw), int(begin_kind)),
+    )
+    conn.commit()
+
+
 def db_get_or_create_ticket_range(speelweek_id: int, film_id: int, zaal_id: int | None) -> tuple[int, int]:
+    """
+    Ticketnummers lopen door:
+    - bestaat record in ticket_ranges => gebruik dat
+    - anders: zoek vorige speelweek (zelfde film + zaal), neem eind + 1
+    - anders: globale counters uit settings
+    """
     conn = get_conn()
     try:
         cur = conn.cursor(dictionary=True)
+
+        # bestaat al?
         cur.execute(
             """
             SELECT begin_volw, begin_kind
@@ -365,19 +413,66 @@ def db_get_or_create_ticket_range(speelweek_id: int, film_id: int, zaal_id: int 
         if row:
             return int(row["begin_volw"]), int(row["begin_kind"])
 
-        bv = db_get_int_setting("ticket_counter_volw", DEFAULT_TICKET_COUNTER_VOLW)
-        bk = db_get_int_setting("ticket_counter_kind", DEFAULT_TICKET_COUNTER_KIND)
+        # startdatum huidige speelweek
+        cur.execute("SELECT start_datum FROM speelweek WHERE id=%s", (speelweek_id,))
+        sw = cur.fetchone()
+        if not sw:
+            bv = db_get_int_setting("ticket_counter_volw", DEFAULT_TICKET_COUNTER_VOLW)
+            bk = db_get_int_setting("ticket_counter_kind", DEFAULT_TICKET_COUNTER_KIND)
+            _insert_ticket_range(conn, speelweek_id, film_id, zaal_id, bv, bk)
+            return int(bv), int(bk)
 
-        cur2 = conn.cursor()
-        cur2.execute(
+        start_datum = sw["start_datum"]
+
+        # vorige ticket_range voor dezelfde film+zaal
+        cur.execute(
             """
-            INSERT INTO ticket_ranges(speelweek_id, film_id, zaal_id, begin_volw, begin_kind)
-            VALUES(%s,%s,%s,%s,%s)
+            SELECT tr.speelweek_id, tr.begin_volw, tr.begin_kind
+            FROM ticket_ranges tr
+            JOIN speelweek sw2 ON sw2.id = tr.speelweek_id
+            WHERE tr.film_id=%s
+              AND COALESCE(tr.zaal_id,0)=COALESCE(%s,0)
+              AND sw2.start_datum < %s
+            ORDER BY sw2.start_datum DESC
+            LIMIT 1
             """,
-            (speelweek_id, film_id, zaal_id, int(bv), int(bk)),
+            (film_id, zaal_id, start_datum),
         )
-        conn.commit()
-        return int(bv), int(bk)
+        prev = cur.fetchone()
+
+        if prev:
+            prev_sw_id = int(prev["speelweek_id"])
+            prev_begin_volw = int(prev["begin_volw"])
+            prev_begin_kind = int(prev["begin_kind"])
+
+            prev_volw_qty, prev_kind_qty = db_sum_paid_qty_for_speelweek(prev_sw_id, film_id, zaal_id)
+
+            prev_end_volw = calc_ticket_end(prev_begin_volw, prev_volw_qty)
+            prev_end_kind = calc_ticket_end(prev_begin_kind, prev_kind_qty)
+
+            new_begin_volw = prev_end_volw + 1
+            new_begin_kind = prev_end_kind + 1
+        else:
+            new_begin_volw = db_get_int_setting("ticket_counter_volw", DEFAULT_TICKET_COUNTER_VOLW)
+            new_begin_kind = db_get_int_setting("ticket_counter_kind", DEFAULT_TICKET_COUNTER_KIND)
+
+        _insert_ticket_range(conn, speelweek_id, film_id, zaal_id, new_begin_volw, new_begin_kind)
+
+        # globale counters laten meegroeien (veilig)
+        try:
+            db_set_int_setting(
+                "ticket_counter_volw",
+                max(db_get_int_setting("ticket_counter_volw", 1), int(new_begin_volw)),
+            )
+            db_set_int_setting(
+                "ticket_counter_kind",
+                max(db_get_int_setting("ticket_counter_kind", 1), int(new_begin_kind)),
+            )
+        except Exception:
+            pass
+
+        return int(new_begin_volw), int(new_begin_kind)
+
     finally:
         conn.close()
 
@@ -389,6 +484,7 @@ def db_fetch_history(from_date: date, to_date: date):
         cur.execute(
             """
             SELECT
+              ds.speelweek_id,
               ds.datum,
               sw.weeknummer,
               sw.start_datum,
@@ -418,6 +514,9 @@ def db_fetch_history(from_date: date, to_date: date):
         conn.close()
 
 
+# =========================
+# PDF: DB queries
+# =========================
 def db_fetch_borderel_combos(from_date: date, to_date: date):
     conn = get_conn()
     try:
@@ -486,7 +585,7 @@ def db_fetch_week_sales_for_film_zaal(speelweek_id: int, film_id: int, zaal_naam
 
 # =========================================================
 # PDF helper: "GEBRUIKTE TICKETS" tabel
-# Kolommen: BeginTicket | EindTicket | Aantal toeschouwers | Prijs | Bruto ontvangst btw inbegrepen
+# Kolommen: BeginTicket, EindTicket, Aantal toeschouwers, Prijs, Bruto ontvangst
 # =========================================================
 def draw_used_tickets_table_bo1(
     c,
@@ -541,7 +640,7 @@ def draw_used_tickets_table_bo1(
         c.setFont(font, size)
         c.drawRightString(X(x), Y(y), s)
 
-    # geometry
+    # --- geometry ---
     h_header = 14.0
     h_body = 16.0
     h_footer1 = 7.5
@@ -553,7 +652,7 @@ def draw_used_tickets_table_bo1(
     w_mid = w_mm * 0.20
     w_right = w_mm - w_left - w_mid
 
-    # subkolommen in left: Begin | Eind | Aantal
+    # subkolommen binnen left: Begin | Eind | Aantal
     w_begin = w_left * 0.28
     w_end = w_left * 0.28
     w_qty = w_left - w_begin - w_end
@@ -570,18 +669,21 @@ def draw_used_tickets_table_bo1(
     hline(0, w_mm, y_footer1_top, inner_lw)
     hline(0, w_mm, y_body_top, inner_lw)
 
+    # hoofdkolommen
     vline(w_left, 0, h_total, inner_lw)
     vline(w_left + w_mid, 0, h_total, inner_lw)
 
+    # subkolommen in left enkel over header+body (niet footer)
     x_begin_end = w_begin
     x_end_qty = w_begin + w_end
     vline(x_begin_end, y_footer1_top, h_total, inner_lw)
     vline(x_end_qty, y_footer1_top, h_total, inner_lw)
 
+    # HEADER
     header_y0 = y_body_top
+
     text_center(w_begin / 2, header_y0 + 6.3, "BeginTicket", font="Helvetica-Bold", size=9)
     text_center(w_begin + w_end / 2, header_y0 + 6.3, "EindTicket", font="Helvetica-Bold", size=9)
-
     text_center(w_begin + w_end + w_qty / 2, header_y0 + 9.5, "Aantal", font="Helvetica", size=9)
     text_center(w_begin + w_end + w_qty / 2, header_y0 + 3.2, "toeschouwers", font="Helvetica", size=9)
 
@@ -589,30 +691,36 @@ def draw_used_tickets_table_bo1(
     text_center(w_left + w_mid + w_right / 2, header_y0 + 9.5, "Bruto ontvangst", font="Helvetica", size=9)
     text_center(w_left + w_mid + w_right / 2, header_y0 + 3.2, "BTW inbegrepen", font="Helvetica", size=9)
 
+    # BODY
     row1_y = y_footer1_top + 10.0
     row2_y = y_footer1_top + 3.5
 
+    # Begin/Eind
     text_right(w_begin - pad_r, row1_y, str(int(begin_volw)), font="Helvetica", size=9)
     text_right(w_begin + w_end - pad_r, row1_y, str(int(end_volw)), font="Helvetica", size=9)
-
     text_right(w_begin - pad_r, row2_y, str(int(begin_kind)), font="Helvetica", size=9)
     text_right(w_begin + w_end - pad_r, row2_y, str(int(end_kind)), font="Helvetica", size=9)
 
+    # Aantal
     text_right(w_left - pad_r, row1_y, str(int(volw_qty)), font="Helvetica", size=9)
     text_right(w_left - pad_r, row2_y, str(int(kind_qty)), font="Helvetica", size=9)
 
+    # Prijs
     text_right(w_left + w_mid - pad_r, row1_y, money(volw_price), font="Helvetica", size=9)
     text_right(w_left + w_mid - pad_r, row2_y, money(kind_price), font="Helvetica", size=9)
 
+    # Bruto
     text_right(w_mm - pad_r, row1_y, money(volw_amt), font="Helvetica", size=9)
     text_right(w_mm - pad_r, row2_y, money(kind_amt), font="Helvetica", size=9)
 
+    # FOOTER1
     f1_y = h_footer2
     text_left(2.0, f1_y + 2.2, "toeschouwers", font="Helvetica-Bold", size=9)
     text_right(w_left - pad_r, f1_y + 2.4, str(int(tickets_total)), font="Helvetica", size=9)
     text_center(w_left + w_mid / 2, f1_y + 2.4, "Totaal", font="Helvetica", size=9)
     text_right(w_mm - pad_r, f1_y + 2.4, money(gross_total), font="Helvetica", size=9)
 
+    # FOOTER2 (kosteloos)
     text_right(w_left - pad_r, 2.4, str(int(gratis_total)), font="Helvetica", size=9)
     text_center(w_left + w_mid / 2, 2.2, "Kosteloos", font="Helvetica", size=9)
 
@@ -781,7 +889,8 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     c.rect(x_rep + prefix_w - 6, y_rep - 1.5, rep_w + 20, 9 + 3, stroke=0, fill=1)
     c.setFillColor(colors.black)
 
-    c.drawString(mmx(left + HEADER_C), mmy(top - 26), f"facturen@cinemacentral.be - NR Repertorium {week_start_d.year}: {weeknr}")
+    c.drawString(mmx(left + HEADER_C), mmy(top - 26),
+                 f"facturen@cinemacentral.be - NR Repertorium {week_start_d.year}: {weeknr}")
     c.drawString(mmx(left + HEADER_C), mmy(top - 31), "www.cinemacentral.be")
 
     zaal_txt = f"ZAAL {zaal}".strip()
@@ -824,13 +933,18 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     header_h = 6.2
     hline(film_x, film_x + film_w, film_y + film_h - header_h, lw=LW_IN)
 
-    textc(film_x + col_title/2, film_y + film_h - 4.7, "TITEL VAN DE FILM EN VAN DE BIJFILM", font="Helvetica-Bold", size=8)
-    textc(film_x + col_title + col_nat/2, film_y + film_h - 4.7, "NATIONALITEIT", font="Helvetica-Bold", size=8)
-    textc(film_x + col_title + col_nat + col_dist/2, film_y + film_h - 4.7, "DISTRIBUTEUR", font="Helvetica-Bold", size=8)
+    textc(film_x + col_title/2, film_y + film_h - 4.7, "TITEL VAN DE FILM EN VAN DE BIJFILM",
+          font="Helvetica-Bold", size=8)
+    textc(film_x + col_title + col_nat/2, film_y + film_h - 4.7, "NATIONALITEIT",
+          font="Helvetica-Bold", size=8)
+    textc(film_x + col_title + col_nat + col_dist/2, film_y + film_h - 4.7, "DISTRIBUTEUR",
+          font="Helvetica-Bold", size=8)
 
     content_base = film_y + PAD_Y + 3.8
-    fit_left(film_x + PAD_X, content_base, film_title.upper(), col_title - 2*PAD_X, font="Helvetica-Bold", max_size=18, min_size=10)
-    fit_left(film_x + col_title + PAD_X, content_base, land, col_nat - 2*PAD_X, font="Helvetica-Bold", max_size=12, min_size=8)
+    fit_left(film_x + PAD_X, content_base, film_title.upper(), col_title - 2*PAD_X,
+             font="Helvetica-Bold", max_size=18, min_size=10)
+    fit_left(film_x + col_title + PAD_X, content_base, land, col_nat - 2*PAD_X,
+             font="Helvetica-Bold", max_size=12, min_size=8)
 
     dist_font = "Helvetica-Bold"
     dist_size = 10
@@ -905,8 +1019,10 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
     hline(vt_x, vt_x + vt_w, y_header2_bottom, lw=LW_THIN)
 
     textc(vt_x + v0/2, vt_y + vt_h - 7.2, "Voorstelling", font="Helvetica-Bold", size=8)
-    textc_multiline(vt_x + v0 + (v1+v2)/2, vt_y + vt_h - 6.0, ["Betalende", "toeschouwers"], font="Helvetica-Bold", size=7, leading_mm=3.0)
-    textc_multiline(vt_x + v0 + v1 + v2 + (v3+v4)/2, vt_y + vt_h - 6.0, ["Bruto", "ontvangst"], font="Helvetica-Bold", size=7, leading_mm=3.0)
+    textc_multiline(vt_x + v0 + (v1+v2)/2, vt_y + vt_h - 6.0, ["Betalende", "toeschouwers"],
+                    font="Helvetica-Bold", size=7, leading_mm=3.0)
+    textc_multiline(vt_x + v0 + v1 + v2 + (v3+v4)/2, vt_y + vt_h - 6.0, ["Bruto", "ontvangst"],
+                    font="Helvetica-Bold", size=7, leading_mm=3.0)
 
     textc(vt_x + v0 + v1/2, vt_y + vt_h - 21, "Aantal", font="Helvetica-Bold", size=7)
     textc(vt_x + v0 + v1 + v2/2, vt_y + vt_h - 21, "Prijs", font="Helvetica-Bold", size=7)
@@ -1002,6 +1118,7 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
 
 # =========================
 # Calendar Picker (modal)
+# (klik op datum => getal rood + rode kader)
 # =========================
 class DatePickerDialog(tk.Toplevel):
     def __init__(self, parent, title: str, initial: date):
@@ -1074,7 +1191,6 @@ class DatePickerDialog(tk.Toplevel):
             self._view_month += 1
         self._render_month()
 
-    
     def _render_month(self):
         self.lbl_title.config(text=f"{calendar.month_name[self._view_month]} {self._view_year}")
 
@@ -1097,19 +1213,16 @@ class DatePickerDialog(tk.Toplevel):
                 d = date(self._view_year, self._view_month, day)
                 is_selected = (d == self._sel_date)
 
-                # geselecteerde dag: rode tekst + rode kader
                 if is_selected:
                     fg = "red"
                     bg = "white"
                     bd = 2
-                    hl_bg = "red"
-                    hl_th = 2
+                    hl = 2
                 else:
                     fg = "black"
                     bg = "white"
                     bd = 1
-                    hl_bg = "black"
-                    hl_th = 0
+                    hl = 0
 
                 btn = tk.Button(
                     self.grid_frame,
@@ -1120,19 +1233,16 @@ class DatePickerDialog(tk.Toplevel):
                     fg=fg,
                     bd=bd,
                     relief="solid",
-                    highlightbackground=hl_bg,   # randkleur (macOS)
-                    highlightcolor=hl_bg,
-                    highlightthickness=hl_th,
+                    highlightthickness=hl,
+                    highlightbackground="red",
+                    highlightcolor="red",
                     command=lambda dd=d: self._set_selected(dd),
                 )
                 btn.grid(row=r, column=c, padx=2, pady=2)
 
-
-
     def _set_selected(self, d: date):
         self._sel_date = d
         self._render_month()
-
 
     def _ok(self):
         self._selected = self._sel_date
@@ -1144,35 +1254,24 @@ class DatePickerDialog(tk.Toplevel):
 
 
 class DateField(ttk.Frame):
-    """
-    Bewerkbaar Van/Tot veld:
-    - user mag typen (YYYY-MM-DD)
-    - 📅 knop opent kalender
-    """
     def __init__(self, parent, label: str, initial: date):
         super().__init__(parent)
         self.var = tk.StringVar(value=initial.strftime("%Y-%m-%d"))
 
         ttk.Label(self, text=label).pack(side="left")
-        self.entry = ttk.Entry(self, textvariable=self.var, width=12)
+        self.entry = ttk.Entry(self, textvariable=self.var, width=12, state="readonly")
         self.entry.pack(side="left", padx=(6, 6))
         ttk.Button(self, text="📅", width=3, command=self.pick).pack(side="left")
 
     def pick(self):
-        current = self.get_date(silent=True) or date.today()
+        current = datetime.strptime(self.var.get(), "%Y-%m-%d").date()
         dlg = DatePickerDialog(self.winfo_toplevel(), "Kies datum", current)
         self.wait_window(dlg)
         if dlg.selected:
             self.var.set(dlg.selected.strftime("%Y-%m-%d"))
 
-    def get_date(self, silent: bool = False) -> date:
-        s = (self.var.get() or "").strip()
-        try:
-            return datetime.strptime(s, "%Y-%m-%d").date()
-        except Exception:
-            if silent:
-                return None
-            raise
+    def get_date(self) -> date:
+        return datetime.strptime(self.var.get(), "%Y-%m-%d").date()
 
     def set_date(self, d: date):
         self.var.set(d.strftime("%Y-%m-%d"))
@@ -1196,12 +1295,21 @@ class SumUpFilmApp:
         self._active_col_index = None
         self._active_value = None
 
+        self._history_cache = []
+        self._hist_item_meta = {}
+
+        # --- CineData copy (rechterklik) ---
+        self._hist_active_item = None
+        self._hist_active_col_index = None
+        self._hist_active_value = None
+        self.hist_menu = None
+
         self._build_ui()
         self._bind_copy_shortcuts()
         self._load_settings_into_ui()
 
-        # Default: CineData = huidige speelweek, maar user kan aanpassen
-        self._set_cinedata_to_current_speelweek(refresh=False)
+        # CineData start op huidige speelweek (maar user mag aanpassen)
+        self._set_cinedata_to_current_week()
         self.refresh_history()
 
     def _build_ui(self):
@@ -1267,7 +1375,7 @@ class SumUpFilmApp:
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        self.tree.bind("<Double-1>", self._start_edit)
+        self.tree.bind("<Double-1>", self._start_edit_import)
         self.tree.bind("<Button-1>", self._on_left_click, add=True)
         self.tree.bind("<Button-3>", self._on_right_click, add=True)
         self.tree.bind("<Button-2>", self._on_right_click, add=True)
@@ -1523,14 +1631,14 @@ class SumUpFilmApp:
         self.status.set(f"Geladen + opgeslagen: {os.path.basename(path)} | Datum: {d.isoformat()} | Speelweek: {weeknummer}")
         self._update_totals()
 
-        # CineData: standaard terug naar huidige speelweek, maar user kan daarna aanpassen
-        self._set_cinedata_to_current_speelweek(refresh=False)
+        # CineData blijft op huidige speelweek, maar user kan veranderen nadien
+        self._set_cinedata_to_current_week()
         self.refresh_history()
 
     # -----------------------------
-    # Edit (en meteen DB updaten)
+    # Edit (Import) -> meteen DB updaten
     # -----------------------------
-    def _start_edit(self, event):
+    def _start_edit_import(self, event):
         region = self.tree.identify("region", event.x, event.y)
         if region != "cell":
             return
@@ -1552,11 +1660,11 @@ class SumUpFilmApp:
         entry.place(x=x, y=y, width=w, height=h)
         entry.focus()
 
-        entry.bind("<Return>", lambda e: self._finish_edit(entry, item, col_name))
+        entry.bind("<Return>", lambda e: self._finish_edit_import(entry, item, col_name))
         entry.bind("<Escape>", lambda e: entry.destroy())
-        entry.bind("<FocusOut>", lambda e: self._finish_edit(entry, item, col_name))
+        entry.bind("<FocusOut>", lambda e: self._finish_edit_import(entry, item, col_name))
 
-    def _finish_edit(self, entry, item, col_name):
+    def _finish_edit_import(self, entry, item, col_name):
         try:
             new_aantal = int(entry.get())
             if new_aantal < 0:
@@ -1625,6 +1733,7 @@ class SumUpFilmApp:
         self.root.focus_set()
         self._update_totals()
 
+        # DIRECT naar DB schrijven
         meta = self.item_meta.get(item)
         if not meta:
             self.status.set("⚠️ Geen meta-info om DB te updaten.")
@@ -1651,7 +1760,6 @@ class SumUpFilmApp:
         except Exception as e:
             messagebox.showerror("DB fout", f"Kon wijziging niet opslaan:\n\n{e}")
 
-        # CineData refresht (met de huidige Van/Tot van de gebruiker!)
         self.refresh_history()
 
     def _update_totals(self):
@@ -1687,17 +1795,11 @@ class SumUpFilmApp:
     # -----------------------------
     # CineData tab
     # -----------------------------
-    def _set_cinedata_to_current_speelweek(self, refresh: bool = True):
-        start, end = current_speelweek_dates(date.today())
-        self.hist_from.set_date(start)
-        self.hist_to.set_date(end)
-        if refresh:
-            self.refresh_history()
-
     def _build_history_tab(self):
         top = ttk.Frame(self.tab_history)
         top.pack(fill="x")
 
+        # start op huidige speelweek
         start, end = current_speelweek_dates(date.today())
 
         self.hist_from = DateField(top, "Van:", start)
@@ -1707,12 +1809,7 @@ class SumUpFilmApp:
         self.hist_to.pack(side="left", padx=(0, 18))
 
         ttk.Button(top, text="Raadplegen", command=self.refresh_history).pack(side="left")
-
-        ttk.Button(
-            top,
-            text="Huidige speelweek",
-            command=lambda: self._set_cinedata_to_current_speelweek(True),
-        ).pack(side="left", padx=8)
+        ttk.Button(top, text="Huidige speelweek", command=self._set_cinedata_to_current_week_and_refresh).pack(side="left", padx=8)
 
         ttk.Button(top, text="Export historiek (CSV)", command=self.export_history_csv).pack(side="left", padx=8)
         ttk.Button(top, text="Maak borderel", command=self.export_borderels_pdf_bo1).pack(side="left", padx=8)
@@ -1723,7 +1820,6 @@ class SumUpFilmApp:
         mid = ttk.Frame(self.tab_history)
         mid.pack(fill="both", expand=True, pady=(10, 0))
 
-        # ✅ 15 kolommen, matcht exact met insert in refresh_history()
         self.hist_cols = (
             "Datum",
             "Speelweek",
@@ -1760,17 +1856,30 @@ class SumUpFilmApp:
         self.hist_tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        self._history_cache = []
+        # dubbelklik op Speelweek kolom = aanpassen
+        self.hist_tree.bind("<Double-1>", self._start_edit_weeknr)
+
+        # --- Rechtermuisklik kopiëren (ALLEEN 6 kolommen) ---
+        self.hist_menu = tk.Menu(self.root, tearoff=0)
+        self.hist_menu.add_command(label="Kopieer", command=self.copy_hist_active_cell_to_clipboard)
+
+        self.hist_tree.bind("<Button-1>", self._hist_on_left_click, add=True)
+        self.hist_tree.bind("<Button-3>", self._hist_on_right_click, add=True)         # Windows
+        self.hist_tree.bind("<Button-2>", self._hist_on_right_click, add=True)         # Mac (soms)
+        self.hist_tree.bind("<Control-Button-1>", self._hist_on_right_click, add=True) # Mac ctrl+klik
+
+    def _set_cinedata_to_current_week(self):
+        start, end = current_speelweek_dates(date.today())
+        self.hist_from.set_date(start)
+        self.hist_to.set_date(end)
+
+    def _set_cinedata_to_current_week_and_refresh(self):
+        self._set_cinedata_to_current_week()
+        self.refresh_history()
 
     def refresh_history(self):
-        # ✅ NIET resetten naar speelweek: Raadplegen gebruikt wat user invult!
-        try:
-            f = self.hist_from.get_date()
-            t = self.hist_to.get_date()
-        except Exception:
-            messagebox.showerror("Fout", "Ongeldige datum. Gebruik formaat YYYY-MM-DD.")
-            return
-
+        f = self.hist_from.get_date()
+        t = self.hist_to.get_date()
         if t < f:
             messagebox.showerror("Fout", "‘Tot’ mag niet vóór ‘Van’ liggen.")
             return
@@ -1782,10 +1891,12 @@ class SumUpFilmApp:
             return
 
         self._history_cache = rows
+        self._hist_item_meta = {}
+
         self.hist_tree.delete(*self.hist_tree.get_children())
 
         for r in rows:
-            self.hist_tree.insert(
+            item_id = self.hist_tree.insert(
                 "",
                 "end",
                 values=(
@@ -1806,8 +1917,136 @@ class SumUpFilmApp:
                     f"{float(r['totaal_bedrag']):.2f}",
                 ),
             )
+            self._hist_item_meta[item_id] = {"speelweek_id": int(r["speelweek_id"])}
 
-        self.hist_status.set(f"{len(rows)} records ({f.isoformat()} → {t.isoformat()})")
+        self.hist_status.set(f"{len(rows)} records (van {f} tot {t})")
+
+    # ---- Speelweek edit (CineData) ----
+    def _start_edit_weeknr(self, event):
+        region = self.hist_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+
+        item = self.hist_tree.identify_row(event.y)
+        col = self.hist_tree.identify_column(event.x)
+        if not item or not col:
+            return
+
+        col_index = int(col.replace("#", "")) - 1
+        col_name = self.hist_cols[col_index]
+        if col_name != "Speelweek":
+            return
+
+        x, y, w, h = self.hist_tree.bbox(item, col)
+        old_val = self.hist_tree.item(item, "values")[col_index]
+
+        entry = ttk.Entry(self.hist_tree)
+        entry.insert(0, old_val)
+        entry.select_range(0, tk.END)
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.focus()
+
+        entry.bind("<Return>", lambda e: self._finish_edit_weeknr(entry, item, col_index))
+        entry.bind("<Escape>", lambda e: entry.destroy())
+        entry.bind("<FocusOut>", lambda e: self._finish_edit_weeknr(entry, item, col_index))
+
+    def _finish_edit_weeknr(self, entry, item, col_index: int):
+        try:
+            new_weeknr = int(entry.get().strip())
+            if new_weeknr < 1:
+                raise ValueError()
+        except Exception:
+            entry.destroy()
+            return
+
+        meta = self._hist_item_meta.get(item)
+        if not meta:
+            entry.destroy()
+            messagebox.showerror("Fout", "Geen speelweek_id gevonden voor deze rij.")
+            return
+
+        speelweek_id = int(meta["speelweek_id"])
+
+        try:
+            db_update_speelweek_weeknummer(speelweek_id, new_weeknr)
+        except Exception as e:
+            entry.destroy()
+            messagebox.showerror("DB fout", f"Kon speelweeknummer niet aanpassen:\n\n{e}")
+            return
+
+        values = list(self.hist_tree.item(item, "values"))
+        values[col_index] = str(new_weeknr)
+        self.hist_tree.item(item, values=values)
+        entry.destroy()
+        self.hist_status.set("Speelweeknummer aangepast.")
+
+    # ---- Rechtermuisklik kopiëren (ALLEEN 6 kolommen) ----
+    def _hist_on_left_click(self, event):
+        self._hist_set_active_cell_from_event(event)
+
+    def _hist_on_right_click(self, event):
+        self._hist_set_active_cell_from_event(event)
+
+        if self._hist_active_item is None or self._hist_active_col_index is None:
+            return
+
+        col_name = self.hist_cols[self._hist_active_col_index]
+        allowed = {"Volw", "Kind", "Bedrag volw", "Bedrag kind", "Totaal", "Totaal bedrag"}
+        if col_name not in allowed:
+            return
+
+        if self._hist_active_value is None:
+            return
+
+        try:
+            self.hist_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.hist_menu.grab_release()
+
+    def _hist_set_active_cell_from_event(self, event):
+        region = self.hist_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            self._hist_active_item = None
+            self._hist_active_col_index = None
+            self._hist_active_value = None
+            return
+
+        item = self.hist_tree.identify_row(event.y)
+        col = self.hist_tree.identify_column(event.x)
+        if not item or not col:
+            self._hist_active_item = None
+            self._hist_active_col_index = None
+            self._hist_active_value = None
+            return
+
+        col_index = int(col.replace("#", "")) - 1
+        values = self.hist_tree.item(item, "values")
+
+        self.hist_tree.focus(item)
+        self.hist_tree.selection_set(item)
+
+        self._hist_active_item = item
+        self._hist_active_col_index = col_index
+        self._hist_active_value = values[col_index] if col_index < len(values) else None
+
+    def copy_hist_active_cell_to_clipboard(self):
+        if self._hist_active_item is None or self._hist_active_col_index is None:
+            return
+
+        col_name = self.hist_cols[self._hist_active_col_index]
+        allowed = {"Volw", "Kind", "Bedrag volw", "Bedrag kind", "Totaal", "Totaal bedrag"}
+        if col_name not in allowed:
+            return
+
+        val = self._hist_active_value
+        if val is None:
+            return
+
+        text = str(val)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update()
+        self.hist_status.set(f"Gekopieerd: {col_name} = {text}")
 
     def export_history_csv(self):
         if not self._history_cache:
@@ -1820,14 +2059,8 @@ class SumUpFilmApp:
         messagebox.showinfo("Export", "CineData CSV opgeslagen.")
 
     def export_borderels_pdf_bo1(self):
-        # ✅ exporteert volgens gekozen Van/Tot (geen reset!)
-        try:
-            f = self.hist_from.get_date()
-            t = self.hist_to.get_date()
-        except Exception:
-            messagebox.showerror("Fout", "Ongeldige datum. Gebruik formaat YYYY-MM-DD.")
-            return
-
+        f = self.hist_from.get_date()
+        t = self.hist_to.get_date()
         if t < f:
             messagebox.showerror("Fout", "‘Tot’ mag niet vóór ‘Van’ liggen.")
             return
@@ -1982,8 +2215,7 @@ class SumUpFilmApp:
         self.settings_status.set("Instellingen opgeslagen.")
         self.status.set("Instellingen opgeslagen.")
 
-        # CineData niet forceren, maar als user wil: knop "Huidige speelweek"
-        # We refreshen enkel met huidige Van/Tot
+        self._set_cinedata_to_current_week()
         self.refresh_history()
 
 
