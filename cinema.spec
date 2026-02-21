@@ -49,13 +49,14 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='Cinema.app',
-    icon=None,
+    icon='assets/CinemaCentral.icns',   # <-- deze lijn
     bundle_identifier='be.cinema.backoffice',
     info_plist={
         'CFBundleShortVersionString': '1.0',
         'CFBundleVersion': '1',
         'CFBundleDisplayName': 'CinemaBackOffice',
         'NSHumanReadableCopyright': '© 2026 Tim Caudron',
+        'NSHighResolutionCapable': True,
     },
 )
 
