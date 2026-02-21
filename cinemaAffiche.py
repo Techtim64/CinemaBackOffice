@@ -10,7 +10,7 @@ from typing import List, Dict, Optional
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
@@ -32,8 +32,10 @@ logging.basicConfig(
 )
 
 APP_TITLE = "Cinema Central — Affiche Generator"
-MAX_TOP = 5
-MAX_BOTTOM = 10
+
+# Storage caps (fixed by your layout rules)
+MAX_TOP = 5       # top uses 4 or 5 slots
+MAX_BOTTOM = 10   # bottom uses 8 or 10 slots
 
 # A4 at 300 DPI
 DPI = 300
@@ -43,7 +45,7 @@ A4_H_PX = int(11.69 * DPI)  # 3507
 # Layout
 TOP_POSTERS_H = int(A4_H_PX * 0.18)
 
-# Table style constants
+# Table layout constants (pixels; consistent)
 HEADER1_H_PX = 110   # black bar
 HEADER2_H_PX = 120   # column headers row
 ROW_H_TARGET = 36    # compact row height
@@ -51,13 +53,22 @@ ROW_H_MIN = 28       # minimum row height if too many rows
 
 # Bottom strip rules
 BOTTOM_MIN_OK = int(A4_H_PX * 0.16)  # keep bottom visible
-BOTTOM_DEFAULT = int(A4_H_PX * 0.20)
 
 DUTCH_MONTHS = {
     1: "Jan.", 2: "Feb.", 3: "Mrt.", 4: "Apr.", 5: "Mei", 6: "Jun.",
     7: "Jul.", 8: "Aug.", 9: "Sep.", 10: "Okt.", 11: "Nov.", 12: "Dec."
 }
 DUTCH_DAYS_SHORT = ["Ma", "Di", "Woe", "Don", "Vrij", "Zat", "Zon"]
+
+
+def top_cols_for_rows(n_rows: int) -> int:
+    # TOP: 1 rij, 4 of 5 posters
+    return 4 if n_rows <= 12 else 5
+
+
+def bottom_cols_for_rows(n_rows: int) -> int:
+    # BOTTOM: R1 en R2 elk 4 of 5 posters
+    return 4 if n_rows <= 12 else 5
 
 
 def _load_font(size: int, bold=False):
@@ -76,6 +87,7 @@ def _load_font(size: int, bold=False):
 @dataclass
 class FilmRow:
     name: str = "NAAM"
+    duration: str = ""       # bv "1u30"
     version: str = "OV"
     is_3d: bool = False
     good_icons: List[str] = field(default_factory=list)
@@ -84,8 +96,8 @@ class FilmRow:
 
 @dataclass
 class PosterLayout:
-    top: List[str] = field(default_factory=lambda: [""] * MAX_TOP)
-    bottom: List[str] = field(default_factory=lambda: [""] * MAX_BOTTOM)
+    top: List[str] = field(default_factory=lambda: [""] * MAX_TOP)        # slots 0..4
+    bottom: List[str] = field(default_factory=lambda: [""] * MAX_BOTTOM)  # slots 0..9
 
 
 @dataclass
@@ -118,7 +130,7 @@ def day_col_label(d: dt.date) -> str:
 
 
 # -----------------------------
-# SVG support (optional)
+# SVG + ImageMagick support for icons
 # -----------------------------
 def _try_svg_to_png_bytes(svg_path: Path, w: int, h: int) -> Optional[bytes]:
     try:
@@ -127,8 +139,7 @@ def _try_svg_to_png_bytes(svg_path: Path, w: int, h: int) -> Optional[bytes]:
         return None
     try:
         return cairosvg.svg2png(url=str(svg_path), output_width=w, output_height=h)
-    except Exception as e:
-        logging.exception(f"cairosvg failed on {svg_path}: {e}")
+    except Exception:
         return None
 
 
@@ -155,60 +166,11 @@ class AfficheRenderer:
         self._icons_cache: Dict[str, Image.Image] = {}
 
     @staticmethod
-    def _split_width(total_w: int, n: int) -> List[int]:
-        base = total_w // n
-        widths = [base] * n
-        widths[-1] += total_w - base * n
-        return widths
-
-    @staticmethod
-    def _draw_cover(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
-        src_w, src_h = img.size
-        scale = max(target_w / src_w, target_h / src_h)
-        new_w, new_h = int(src_w * scale), int(src_h * scale)
-        resized = img.resize((new_w, new_h), Image.LANCZOS)
-        left = (new_w - target_w) // 2
-        top = (new_h - target_h) // 2
-        return resized.crop((left, top, left + target_w, top + target_h))
-
-    @staticmethod
-    def _draw_contain(img: Image.Image, target_w: int, target_h: int, bg=(240, 240, 240)) -> Image.Image:
-        src_w, src_h = img.size
-        scale = min(target_w / src_w, target_h / src_h)
-        new_w, new_h = int(src_w * scale), int(src_h * scale)
-        resized = img.resize((new_w, new_h), Image.LANCZOS)
-        canvas_img = Image.new("RGB", (target_w, target_h), bg)
-        x = (target_w - new_w) // 2
-        y = (target_h - new_h) // 2
-        canvas_img.paste(resized, (x, y))
-        return canvas_img
-
-    @staticmethod
-    def _draw_smart_fit(img: Image.Image, target_w: int, target_h: int, max_empty_ratio: float = 0.10) -> Image.Image:
-        """
-        Proportioneel, met minimum 'lege' ruimte:
-        - Als contain weinig leegte geeft -> contain
-        - Anders -> blurred cover achtergrond + contain voorgrond
-        """
-        src_w, src_h = img.size
-        scale = min(target_w / src_w, target_h / src_h)
-        new_w, new_h = int(src_w * scale), int(src_h * scale)
-        empty_ratio = 1.0 - (new_w * new_h) / float(target_w * target_h)
-
-        if empty_ratio <= max_empty_ratio:
-            return AfficheRenderer._draw_contain(img, target_w, target_h, bg=(245, 245, 245))
-
-        # blurred background (cover)
-        bg = AfficheRenderer._draw_cover(img, target_w, target_h).filter(ImageFilter.GaussianBlur(radius=18))
-        # foreground poster (contain)
-        fg = AfficheRenderer._draw_contain(img, target_w, target_h, bg=(0, 0, 0))
-        # Paste fg on bg, but fg has black margins; instead: paste the resized poster directly
-        canvas = bg.copy()
-        resized = img.resize((new_w, new_h), Image.LANCZOS)
-        x = (target_w - new_w) // 2
-        y = (target_h - new_h) // 2
-        canvas.paste(resized, (x, y))
-        return canvas
+    def _split_units(total: int, n: int) -> List[int]:
+        base = total // n
+        arr = [base] * n
+        arr[-1] += total - base * n
+        return arr
 
     @staticmethod
     def _alpha_blit(dst_rgb: Image.Image, src_rgba: Image.Image, x: int, y: int):
@@ -255,15 +217,90 @@ class AfficheRenderer:
         except Exception:
             return None
 
+    # -----------------------------
+    # Poster scaling: FULL poster visible + minimal "empty space"
+    # Edge-fill instead of blur/black bars.
+    # -----------------------------
+    def _draw_contain_edge_fill(self, img: Image.Image, target_w: int, target_h: int) -> Image.Image:
+        """
+        Poster volledig zichtbaar (contain), zonder lelijke zwarte/lege balken:
+        - achtergrond wordt gevuld door edge-stretch (geen blur!)
+        - poster blijft 100% proportioneel
+        """
+        img = img.convert("RGB")
+        src_w, src_h = img.size
+
+        scale = min(target_w / src_w, target_h / src_h)
+        new_w, new_h = max(1, int(src_w * scale)), max(1, int(src_h * scale))
+        fg = img.resize((new_w, new_h), Image.LANCZOS)
+
+        bg = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+
+        x_off = (target_w - new_w) // 2
+        y_off = (target_h - new_h) // 2
+
+        # Paste main poster
+        bg.paste(fg, (x_off, y_off))
+
+        # Horizontal bars (left/right)
+        if new_w < target_w:
+            left_w = x_off
+            right_w = target_w - (x_off + new_w)
+
+            if left_w > 0:
+                left_strip = fg.crop((0, 0, 1, new_h)).resize((left_w, new_h), Image.LANCZOS)
+                bg.paste(left_strip, (0, y_off))
+
+            if right_w > 0:
+                right_strip = fg.crop((new_w - 1, 0, new_w, new_h)).resize((right_w, new_h), Image.LANCZOS)
+                bg.paste(right_strip, (x_off + new_w, y_off))
+
+            # If also vertical bars exist, fill them by stretching one row of pixels from the composed area
+            if new_h < target_h:
+                top_h = y_off
+                bot_h = target_h - (y_off + new_h)
+
+                if top_h > 0:
+                    top_band = bg.crop((0, y_off, target_w, y_off + 1)).resize((target_w, top_h), Image.LANCZOS)
+                    bg.paste(top_band, (0, 0))
+                if bot_h > 0:
+                    bot_band = bg.crop((0, y_off + new_h - 1, target_w, y_off + new_h)).resize((target_w, bot_h), Image.LANCZOS)
+                    bg.paste(bot_band, (0, y_off + new_h))
+
+        # Vertical bars only (top/bottom)
+        elif new_h < target_h:
+            top_h = y_off
+            bot_h = target_h - (y_off + new_h)
+
+            if top_h > 0:
+                top_strip = fg.crop((0, 0, new_w, 1)).resize((new_w, top_h), Image.LANCZOS)
+                bg.paste(top_strip, (x_off, 0))
+            if bot_h > 0:
+                bot_strip = fg.crop((0, new_h - 1, new_w, new_h)).resize((new_w, bot_h), Image.LANCZOS)
+                bg.paste(bot_strip, (x_off, y_off + new_h))
+
+            # Fill left/right edges using nearest pixels already present
+            if x_off > 0:
+                left_band = bg.crop((x_off, 0, x_off + 1, target_h)).resize((x_off, target_h), Image.LANCZOS)
+                bg.paste(left_band, (0, 0))
+            right_w = target_w - (x_off + new_w)
+            if right_w > 0:
+                right_band = bg.crop((x_off + new_w - 1, 0, x_off + new_w, target_h)).resize((right_w, target_h), Image.LANCZOS)
+                bg.paste(right_band, (x_off + new_w, 0))
+
+        return bg
+
     def render(self, state: AfficheState) -> Image.Image:
         page = Image.new("RGB", (A4_W_PX, A4_H_PX), "white")
         draw = ImageDraw.Draw(page)
 
         film_rows = max(1, len(state.films))
-        posters_to_show = min(MAX_BOTTOM, film_rows)
+
+        top_cols = top_cols_for_rows(film_rows)              # 4 or 5
+        bottom_cols = bottom_cols_for_rows(film_rows)        # 4 or 5
 
         # -------------------------
-        # Dynamic layout: table grows with rows, bottom follows (no big whitespace)
+        # Dynamic layout (table grows; bottom follows)
         # -------------------------
         top_h = TOP_POSTERS_H
         header1_h = HEADER1_H_PX
@@ -281,6 +318,7 @@ class AfficheRenderer:
             space_for_table = A4_H_PX - BOTTOM_MIN_OK - top_h
             max_rows_height = space_for_table - header1_h - header2_h
             row_h = max(ROW_H_MIN, max_rows_height // film_rows)
+
             table_h_needed = header1_h + header2_h + film_rows * row_h
             table_y1 = table_y0 + table_h_needed
             bottom_y0 = table_y1
@@ -289,16 +327,17 @@ class AfficheRenderer:
                 bottom_h = 0
 
         # -------------------------
-        # Top posters (cover)
+        # TOP posters (1 row, 4 or 5 columns) — SAME scaling as bottom
         # -------------------------
-        top_widths = self._split_width(A4_W_PX, MAX_TOP)
+        col_widths = self._split_units(A4_W_PX, top_cols)
         x = 0
-        for i, w in enumerate(top_widths):
-            p = state.posters.top[i]
+        for i in range(top_cols):
+            w = col_widths[i]
+            p = state.posters.top[i] if i < len(state.posters.top) else ""
             if p and os.path.isfile(p):
                 try:
-                    img = Image.open(p).convert("RGB")
-                    page.paste(self._draw_cover(img, w, top_h), (x, 0))
+                    img = Image.open(p)
+                    page.paste(self._draw_contain_edge_fill(img, w, top_h), (x, 0))
                 except Exception:
                     draw.rectangle([x, 0, x + w, top_h], fill=(220, 220, 220))
             else:
@@ -306,31 +345,30 @@ class AfficheRenderer:
             x += w
 
         # -------------------------
-        # Table (full width, 14 days)
+        # TABLE
         # -------------------------
         table_x0, table_x1 = 0, A4_W_PX
         table_w = table_x1 - table_x0
 
-        film_w = int(table_w * 0.22)
+        film_w = int(table_w * 0.20)
+        duur_w = int(table_w * 0.05)
         versie_w = int(table_w * 0.08)
         good_w = int(table_w * 0.11)
-        day_total = table_w - film_w - versie_w - good_w
-        day_widths = self._split_width(day_total, 14)
+        day_total = table_w - film_w - duur_w - versie_w - good_w
+        day_widths = self._split_units(day_total, 14)
 
-        # outer border
         draw.rectangle([table_x0, table_y0, table_x1, table_y1], outline=(120, 120, 120), width=3)
 
-        # date parsing
         try:
             start_date = parse_date_iso(state.start_date) if state.start_date else dt.date.today()
         except Exception:
             start_date = dt.date.today()
 
-        # HEADER 1: black bar + white text
         hdr = header_text(start_date)
         if not is_wednesday(start_date):
             hdr += "  (start is geen woensdag)"
 
+        # Header1 black + white
         draw.rectangle([table_x0, table_y0, table_x1, table_y0 + header1_h], fill=(0, 0, 0))
         tw = draw.textlength(hdr, font=self.font_header)
         tx = table_x0 + (table_w - tw) / 2
@@ -352,13 +390,16 @@ class AfficheRenderer:
                 draw.text((xx, yy), ln, fill=fill, font=font)
                 yy += line_h
 
-        # HEADER 2 uniform
+        # Header2 uniform
         y_hdr2 = table_y0 + header1_h
         draw.rectangle([table_x0, y_hdr2, table_x1, y_hdr2 + header2_h], fill=(250, 250, 250))
 
         x = table_x0
         box = (x, y_hdr2, x + film_w, y_hdr2 + header2_h)
         cell_outline(*box); draw_center_text(box, "FILM", self.font_colhdr); x += film_w
+
+        box = (x, y_hdr2, x + duur_w, y_hdr2 + header2_h)
+        cell_outline(*box); draw_center_text(box, "DUUR", self.font_colhdr); x += duur_w
 
         box = (x, y_hdr2, x + versie_w, y_hdr2 + header2_h)
         cell_outline(*box); draw_center_text(box, "VERSIE", self.font_colhdr); x += versie_w
@@ -374,7 +415,7 @@ class AfficheRenderer:
             draw_center_text(box, day_col_label(dates[i]), self.font_cell)
             x += w
 
-        # FILM ROWS
+        # Rows
         rows_y0 = table_y0 + header1_h + header2_h
         for r in range(film_rows):
             ry0 = rows_y0 + r * row_h
@@ -388,6 +429,10 @@ class AfficheRenderer:
             cell_outline(x, ry0, x + film_w, ry1)
             draw_center_text((x, ry0, x + film_w, ry1), film.name, self.font_cell)
             x += film_w
+
+            cell_outline(x, ry0, x + duur_w, ry1)
+            draw_center_text((x, ry0, x + duur_w, ry1), film.duration, self.font_cell)
+            x += duur_w
 
             cell_outline(x, ry0, x + versie_w, ry1)
             vtxt = film.version + (" 3D" if film.is_3d else "")
@@ -416,72 +461,47 @@ class AfficheRenderer:
                 x += w
 
         # -------------------------
-        # Bottom posters grid (dynamic):
-        # - if N<=5 => 1 row with N columns
-        # - else => row1=5, row2=N-5 (columns fill full width)
-        # Uses smart-fit to minimize visible empty space while keeping proportion
+        # BOTTOM posters (2 rows; each 4 or 5 columns) — SAME scaling as top
         # -------------------------
         if bottom_h > 0:
             draw.rectangle([0, bottom_y0, A4_W_PX, A4_H_PX], fill=(240, 240, 240))
 
-            if posters_to_show <= 5:
-                # single row
-                slot_h = bottom_h
-                cols = posters_to_show
-                col_widths = self._split_width(A4_W_PX, max(1, cols))
-                for j in range(posters_to_show):
-                    x0 = sum(col_widths[:j])
-                    w = col_widths[j]
-                    y0b = bottom_y0
-                    h = slot_h
-                    p = state.posters.bottom[j]
-                    if p and os.path.isfile(p):
-                        try:
-                            img = Image.open(p).convert("RGB")
-                            page.paste(self._draw_smart_fit(img, w, h), (x0, y0b))
-                        except Exception:
-                            draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(220, 220, 220))
-                    else:
-                        draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(240, 240, 240))
-            else:
-                # two rows: 5 + (N-5)
-                slot_h = bottom_h // 2
+            slot_hs = self._split_units(bottom_h, 2)
+            row1_h, row2_h = slot_hs[0], slot_hs[1]
+            col_widths = self._split_units(A4_W_PX, bottom_cols)
 
-                # Row 1: always 5
-                col_widths_r1 = self._split_width(A4_W_PX, 5)
-                for j in range(5):
-                    x0 = sum(col_widths_r1[:j])
-                    w = col_widths_r1[j]
-                    y0b = bottom_y0
-                    h = slot_h
-                    p = state.posters.bottom[j]
-                    if p and os.path.isfile(p):
-                        try:
-                            img = Image.open(p).convert("RGB")
-                            page.paste(self._draw_smart_fit(img, w, h), (x0, y0b))
-                        except Exception:
-                            draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(220, 220, 220))
-                    else:
-                        draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(240, 240, 240))
+            # R1 slots [0..bottom_cols-1]
+            x = 0
+            for c in range(bottom_cols):
+                w = col_widths[c]
+                idx = c
+                p = state.posters.bottom[idx] if idx < len(state.posters.bottom) else ""
+                if p and os.path.isfile(p):
+                    try:
+                        img = Image.open(p)
+                        page.paste(self._draw_contain_edge_fill(img, w, row1_h), (x, bottom_y0))
+                    except Exception:
+                        draw.rectangle([x, bottom_y0, x + w, bottom_y0 + row1_h], fill=(220, 220, 220))
+                else:
+                    draw.rectangle([x, bottom_y0, x + w, bottom_y0 + row1_h], fill=(240, 240, 240))
+                x += w
 
-                # Row 2: remaining
-                remaining = posters_to_show - 5
-                col_widths_r2 = self._split_width(A4_W_PX, remaining)
-                for k in range(remaining):
-                    idx = 5 + k
-                    x0 = sum(col_widths_r2[:k])
-                    w = col_widths_r2[k]
-                    y0b = bottom_y0 + slot_h
-                    h = bottom_h - slot_h  # remainder pixels go here
-                    p = state.posters.bottom[idx]
-                    if p and os.path.isfile(p):
-                        try:
-                            img = Image.open(p).convert("RGB")
-                            page.paste(self._draw_smart_fit(img, w, h), (x0, y0b))
-                        except Exception:
-                            draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(220, 220, 220))
-                    else:
-                        draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(240, 240, 240))
+            # R2 slots [bottom_cols..2*bottom_cols-1]
+            x = 0
+            y2 = bottom_y0 + row1_h
+            for c in range(bottom_cols):
+                w = col_widths[c]
+                idx = bottom_cols + c
+                p = state.posters.bottom[idx] if idx < len(state.posters.bottom) else ""
+                if p and os.path.isfile(p):
+                    try:
+                        img = Image.open(p)
+                        page.paste(self._draw_contain_edge_fill(img, w, row2_h), (x, y2))
+                    except Exception:
+                        draw.rectangle([x, y2, x + w, y2 + row2_h], fill=(220, 220, 220))
+                else:
+                    draw.rectangle([x, y2, x + w, y2 + row2_h], fill=(240, 240, 240))
+                x += w
 
         return page
 
@@ -522,15 +542,17 @@ class App(tk.Tk):
         self.is_loading_row = False
         self.last_header_date: Optional[str] = None
 
-        # poster button refs
+        self.top_btn_frame = None
         self.bottom_btn_frame = None
+        self.top_buttons: List[ttk.Button] = []
         self.bottom_buttons: List[ttk.Button] = []
 
         self._build_ui()
         self._refresh_film_list()
         self.film_list.selection_set(0)
         self._load_row_into_editor(0)
-        self._rebuild_bottom_buttons()
+
+        self._rebuild_poster_buttons()
         self._schedule_preview()
 
     def _scan_icons(self) -> List[str]:
@@ -585,13 +607,9 @@ class App(tk.Tk):
         posters_frame = ttk.LabelFrame(left, text="Posters", padding=8)
         posters_frame.pack(fill="x", pady=(0, 8))
 
-        top_row = ttk.Frame(posters_frame)
-        top_row.pack(fill="x")
-        ttk.Label(top_row, text="Top:").pack(side="left", padx=(0, 8))
-        for i in range(MAX_TOP):
-            ttk.Button(top_row, text=f"Top {i+1}", command=lambda k=i: self.import_poster("top", k)).pack(side="left", padx=2)
+        self.top_btn_frame = ttk.Frame(posters_frame)
+        self.top_btn_frame.pack(fill="x")
 
-        # bottom buttons frame (rebuilt dynamically)
         self.bottom_btn_frame = ttk.Frame(posters_frame)
         self.bottom_btn_frame.pack(fill="x", pady=(6, 0))
 
@@ -612,14 +630,26 @@ class App(tk.Tk):
         ttk.Button(btns, text="+ Rij", command=self.add_row).pack(side="left")
         ttk.Button(btns, text="- Rij", command=self.remove_row).pack(side="left", padx=6)
 
+        # Film + duur
         row1 = ttk.Frame(edit_frame)
         row1.pack(fill="x")
-        ttk.Label(row1, text="Film:").pack(side="left")
+
+        ttk.Label(row1, text="Film:").pack(side="left", anchor="n")
+        name_dur = ttk.Frame(row1)
+        name_dur.pack(side="left", padx=6, fill="x", expand=True)
+
         self.name_var = tk.StringVar()
-        ttk.Entry(row1, textvariable=self.name_var, width=40).pack(side="left", padx=6)
+        ttk.Entry(name_dur, textvariable=self.name_var, width=40).pack(anchor="w")
+
+        dur_row = ttk.Frame(name_dur)
+        dur_row.pack(anchor="w", pady=(4, 0))
+        ttk.Label(dur_row, text="Duur:").pack(side="left")
+        self.duration_var = tk.StringVar()
+        ttk.Entry(dur_row, textvariable=self.duration_var, width=8).pack(side="left", padx=(6, 0))
 
         row2 = ttk.Frame(edit_frame)
         row2.pack(fill="x", pady=(6, 0))
+
         ttk.Label(row2, text="Versie:").pack(side="left")
         self.version_var = tk.StringVar(value="OV")
         ttk.Combobox(row2, textvariable=self.version_var, values=["OV", "NV"], width=6, state="readonly").pack(side="left", padx=6)
@@ -671,11 +701,10 @@ class App(tk.Tk):
 
         prev_box = ttk.LabelFrame(right, text="Live preview", padding=8)
         prev_box.pack(fill="both", expand=True)
-
         self.preview_label = ttk.Label(prev_box)
         self.preview_label.pack(fill="both", expand=True)
 
-        for v in [self.start_var, self.name_var, self.version_var]:
+        for v in [self.start_var, self.name_var, self.duration_var, self.version_var]:
             v.trace_add("write", lambda *_: self._schedule_preview())
         self.is3d_var.trace_add("write", lambda *_: self._schedule_preview())
         for cv in self.cell_vars:
@@ -721,54 +750,57 @@ class App(tk.Tk):
         self.film_list.delete(0, tk.END)
         for i, f in enumerate(self.state_obj.films):
             v = f.version + (" 3D" if f.is_3d else "")
-            self.film_list.insert(tk.END, f"{i+1:02d}. {f.name} [{v}]")
+            dur = f.duration.strip()
+            dur_show = f" {dur}" if dur else ""
+            self.film_list.insert(tk.END, f"{i+1:02d}. {f.name}{dur_show} [{v}]")
 
-    def _rebuild_bottom_buttons(self):
-        # Remove old
-        for b in self.bottom_buttons:
+    def _clear_button_frame(self, frame: ttk.Frame, btn_list: List[ttk.Button]):
+        for b in btn_list:
             b.destroy()
-        self.bottom_buttons.clear()
-
-        n = min(MAX_BOTTOM, len(self.state_obj.films))
-        if n <= 0:
-            return
-
-        # Build layout:
-        # <=5 => 1 row
-        # >5 => row1=5, row2=n-5
-        for child in self.bottom_btn_frame.winfo_children():
+        btn_list.clear()
+        for child in frame.winfo_children():
             child.destroy()
 
+    def _rebuild_poster_buttons(self):
+        film_rows = max(1, len(self.state_obj.films))
+        top_cols = top_cols_for_rows(film_rows)              # 4/5
+        bottom_cols = bottom_cols_for_rows(film_rows)        # 4/5
+
+        # TOP buttons: 1..4/5
+        self._clear_button_frame(self.top_btn_frame, self.top_buttons)
+        ttk.Label(self.top_btn_frame, text="Top:").pack(side="left", padx=(0, 8))
+        for i in range(top_cols):
+            btn = ttk.Button(self.top_btn_frame, text=f"{i+1}", command=lambda k=i: self.import_poster("top", k))
+            btn.pack(side="left", padx=2)
+            self.top_buttons.append(btn)
+
+        # BOTTOM buttons: R1-1.. and R2-1..
+        self._clear_button_frame(self.bottom_btn_frame, self.bottom_buttons)
         ttk.Label(self.bottom_btn_frame, text="Bottom:").pack(side="left", padx=(0, 8))
 
-        if n <= 5:
-            for i in range(n):
-                btn = ttk.Button(self.bottom_btn_frame, text=f"{i+1}", command=lambda k=i: self.import_poster("bottom", k))
-                btn.pack(side="left", padx=2)
-                self.bottom_buttons.append(btn)
-        else:
-            # two rows of buttons for clarity
-            rowA = ttk.Frame(self.bottom_btn_frame)
-            rowB = ttk.Frame(self.bottom_btn_frame)
-            rowA.pack(fill="x")
-            rowB.pack(fill="x", pady=(4, 0))
+        rowA = ttk.Frame(self.bottom_btn_frame)
+        rowB = ttk.Frame(self.bottom_btn_frame)
+        rowA.pack(fill="x")
+        rowB.pack(fill="x", pady=(4, 0))
 
-            for i in range(5):
-                btn = ttk.Button(rowA, text=f"R1-{i+1}", command=lambda k=i: self.import_poster("bottom", k))
-                btn.pack(side="left", padx=2)
-                self.bottom_buttons.append(btn)
+        for c in range(bottom_cols):
+            idx = c
+            btn = ttk.Button(rowA, text=f"R1-{c+1}", command=lambda k=idx: self.import_poster("bottom", k))
+            btn.pack(side="left", padx=2)
+            self.bottom_buttons.append(btn)
 
-            for j in range(n - 5):
-                idx = 5 + j
-                btn = ttk.Button(rowB, text=f"R2-{j+1}", command=lambda k=idx: self.import_poster("bottom", k))
-                btn.pack(side="left", padx=2)
-                self.bottom_buttons.append(btn)
+        for c in range(bottom_cols):
+            idx = bottom_cols + c
+            btn = ttk.Button(rowB, text=f"R2-{c+1}", command=lambda k=idx: self.import_poster("bottom", k))
+            btn.pack(side="left", padx=2)
+            self.bottom_buttons.append(btn)
 
     def _save_editor_into_row(self, idx: int):
         if idx < 0 or idx >= len(self.state_obj.films):
             return
         f = self.state_obj.films[idx]
         f.name = self.name_var.get().strip() or "NAAM"
+        f.duration = self.duration_var.get().strip()
         f.version = self.version_var.get().strip() or "OV"
         f.is_3d = bool(self.is3d_var.get())
         f.good_icons = [fn for fn, var in self.icon_vars.items() if var.get()]
@@ -781,6 +813,7 @@ class App(tk.Tk):
         self.is_loading_row = True
         try:
             self.name_var.set(f.name)
+            self.duration_var.set(getattr(f, "duration", ""))
             self.version_var.set(f.version)
             self.is3d_var.set(f.is_3d)
             for fn, var in self.icon_vars.items():
@@ -818,7 +851,7 @@ class App(tk.Tk):
         self._save_editor_into_row(self.current_row_index)
         self.state_obj.films.append(FilmRow())
         self._refresh_film_list()
-        self._rebuild_bottom_buttons()
+        self._rebuild_poster_buttons()
 
         new_idx = len(self.state_obj.films) - 1
         self.film_list.selection_clear(0, tk.END)
@@ -840,7 +873,7 @@ class App(tk.Tk):
 
         new_idx = max(0, idx - 1)
         self._refresh_film_list()
-        self._rebuild_bottom_buttons()
+        self._rebuild_poster_buttons()
 
         self.film_list.selection_clear(0, tk.END)
         self.film_list.selection_set(new_idx)
@@ -851,11 +884,14 @@ class App(tk.Tk):
         self._schedule_preview()
 
     def import_poster(self, where: str, index: int):
-        # Only allow indices needed by film count
-        if where == "bottom":
-            n = min(MAX_BOTTOM, len(self.state_obj.films))
-            if index < 0 or index >= n:
-                return
+        film_rows = max(1, len(self.state_obj.films))
+        if where == "top":
+            limit = top_cols_for_rows(film_rows)          # 4/5
+        else:
+            limit = bottom_cols_for_rows(film_rows) * 2   # 8/10
+
+        if index < 0 or index >= limit:
+            return
 
         path = filedialog.askopenfilename(
             title="Kies poster",
@@ -863,10 +899,12 @@ class App(tk.Tk):
         )
         if not path:
             return
+
         if where == "top":
             self.state_obj.posters.top[index] = path
         else:
             self.state_obj.posters.bottom[index] = path
+
         self._schedule_preview()
 
     def _schedule_preview(self):
