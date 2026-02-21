@@ -7,7 +7,7 @@
 	<key>CFBundleExecutable</key>
 	<string>cinema</string>
 	<key>CFBundleIconFile</key>
-	<string>icon-windowed.icns</string>
+	<string>CinemaCentral.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>be.cinema.backoffice</string>
 	<key>CFBundleInfoDictionaryVersion</key>

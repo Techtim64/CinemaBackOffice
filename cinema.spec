@@ -1,15 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.building.datastruct import Tree
 
 hiddenimports = ['mysql.connector.plugins.caching_sha2_password']
 hiddenimports += collect_submodules('mysql.connector.plugins')
 
+datas = [
+    ('assets/logo.png', 'assets'),
+    ('assets/CinemaCentral.icns', 'assets'),
+    Tree('icons', prefix='icons'),
+    Tree('fonts', prefix='fonts'),
+]
 
 a = Analysis(
-    ['cinema.py'],
+    ['cinema_main_menu.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets/logo.png', 'assets')],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -18,6 +25,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -29,34 +37,30 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,     # macOS: beter uit
     console=False,
-    disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
 )
+
 coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
-    upx_exclude=[],
+    upx=False,
     name='cinema',
 )
+
 app = BUNDLE(
     coll,
     name='Cinema.app',
-    icon='assets/CinemaCentral.icns',   # <-- deze lijn
+    icon='assets/CinemaCentral.icns',
     bundle_identifier='be.cinema.backoffice',
     info_plist={
         'CFBundleShortVersionString': '1.0',
         'CFBundleVersion': '1',
         'CFBundleDisplayName': 'CinemaBackOffice',
-        'NSHumanReadableCopyright': '© 2026 Tim Caudron',
         'NSHighResolutionCapable': True,
+        'NSHumanReadableCopyright': '© 2026 Tim Caudron',
     },
 )
-
