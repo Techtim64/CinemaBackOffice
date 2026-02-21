@@ -585,7 +585,6 @@ def db_fetch_week_sales_for_film_zaal(speelweek_id: int, film_id: int, zaal_naam
 
 # =========================================================
 # PDF helper: "GEBRUIKTE TICKETS" tabel
-# Kolommen: BeginTicket, EindTicket, Aantal toeschouwers, Prijs, Bruto ontvangst
 # =========================================================
 def draw_used_tickets_table_bo1(
     c,
@@ -1118,7 +1117,6 @@ def generate_borderel_bo1_pdf(output_path: str, week_rows: list[dict], btw_rate:
 
 # =========================
 # Calendar Picker (modal)
-# (klik op datum => getal rood + rode kader)
 # =========================
 class DatePickerDialog(tk.Toplevel):
     def __init__(self, parent, title: str, initial: date):
@@ -1278,13 +1276,18 @@ class DateField(ttk.Frame):
 
 
 # =========================
-# UI App
+# UI App (EMBEDDABLE)
 # =========================
 class SumUpFilmApp:
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("Cinema BackOffice – SumUp Filmrapport")
-        self.root.geometry("1400x860")
+    def __init__(self, master):
+        # Container frame in master (Tk or Toplevel)
+        self.root = ttk.Frame(master)
+        self.root.pack(fill="both", expand=True)
+
+        # Actual window for menus/dialogs/clipboard
+        self.toplevel = self.root.winfo_toplevel()
+        self.toplevel.title("Cinema BackOffice – SumUp Filmrapport")
+        self.toplevel.geometry("1400x860")
 
         self.unit_prices = {}
         self.item_meta = {}  # item_id -> dict(datum, speelweek_id, film_id, zaal_id, is_3d, source_file)
@@ -1387,14 +1390,14 @@ class SumUpFilmApp:
         self.total_label = tk.StringVar(value="Totaal tickets: 0 (gratis: 0) | Totaal bedrag: 0,00")
         ttk.Label(bottom, textvariable=self.total_label).pack(anchor="w")
 
-        self.menu = tk.Menu(self.root, tearoff=0)
+        self.menu = tk.Menu(self.toplevel, tearoff=0)
         self.menu.add_command(label="Kopieer", command=self.copy_active_cell_to_clipboard)
 
     def _bind_copy_shortcuts(self):
-        self.root.bind_all("<Control-c>", lambda e: self.copy_active_cell_to_clipboard())
-        self.root.bind_all("<Control-C>", lambda e: self.copy_active_cell_to_clipboard())
-        self.root.bind_all("<Command-c>", lambda e: self.copy_active_cell_to_clipboard())
-        self.root.bind_all("<Command-C>", lambda e: self.copy_active_cell_to_clipboard())
+        self.toplevel.bind_all("<Control-c>", lambda e: self.copy_active_cell_to_clipboard())
+        self.toplevel.bind_all("<Control-C>", lambda e: self.copy_active_cell_to_clipboard())
+        self.toplevel.bind_all("<Command-c>", lambda e: self.copy_active_cell_to_clipboard())
+        self.toplevel.bind_all("<Command-C>", lambda e: self.copy_active_cell_to_clipboard())
 
     def _on_left_click(self, event):
         self._set_active_cell_from_event(event)
@@ -1449,16 +1452,16 @@ class SumUpFilmApp:
         if not text:
             return
 
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.root.update()
+        self.toplevel.clipboard_clear()
+        self.toplevel.clipboard_append(text)
+        self.toplevel.update()
         self.status.set("Gekopieerd naar klembord.")
 
     # -----------------------------
     # CSV import + DB save
     # -----------------------------
     def open_csv(self):
-        path = filedialog.askopenfilename(filetypes=[("CSV bestanden", "*.csv")])
+        path = filedialog.askopenfilename(filetypes=[("CSV bestanden", "*.csv")], parent=self.toplevel)
         if not path:
             return
 
@@ -1467,20 +1470,20 @@ class SumUpFilmApp:
             "Datum kiezen",
             "Voor welke datum is deze CSV? (YYYY-MM-DD)",
             initialvalue=default_d,
-            parent=self.root,
+            parent=self.toplevel,
         )
         if not d_str:
             return
         try:
             d = datetime.strptime(d_str.strip(), "%Y-%m-%d").date()
         except Exception:
-            messagebox.showerror("Fout", "Ongeldige datum. Gebruik formaat YYYY-MM-DD.")
+            messagebox.showerror("Fout", "Ongeldige datum. Gebruik formaat YYYY-MM-DD.", parent=self.toplevel)
             return
 
         try:
             df = pd.read_csv(path)
         except Exception as e:
-            messagebox.showerror("Fout", f"CSV kon niet gelezen worden:\n\n{e}")
+            messagebox.showerror("Fout", f"CSV kon niet gelezen worden:\n\n{e}", parent=self.toplevel)
             return
 
         df = df[df["Categorie"].astype(str).str.lower() == "film"].copy()
@@ -1515,7 +1518,7 @@ class SumUpFilmApp:
         try:
             speelweek_id, weeknummer = db_get_or_create_speelweek(d)
         except Exception as e:
-            messagebox.showerror("DB fout", f"Kon speelweek niet ophalen/aanmaken:\n\n{e}")
+            messagebox.showerror("DB fout", f"Kon speelweek niet ophalen/aanmaken:\n\n{e}", parent=self.toplevel)
             return
 
         self.current_import_date = d
@@ -1537,16 +1540,16 @@ class SumUpFilmApp:
                     "Nieuwe film",
                     f"Maccsbox filmtitel voor:\n{film_titel}",
                     initialvalue=film_titel,
-                    parent=self.root,
+                    parent=self.toplevel,
                 )
                 if not maccs:
                     continue
 
-                distr = simpledialog.askstring("Nieuwe film", f"Distributeur voor:\n{film_titel}", parent=self.root)
+                distr = simpledialog.askstring("Nieuwe film", f"Distributeur voor:\n{film_titel}", parent=self.toplevel)
                 if distr is None:
                     continue
 
-                land = simpledialog.askstring("Nieuwe film", f"Land van herkomst voor:\n{film_titel}", parent=self.root)
+                land = simpledialog.askstring("Nieuwe film", f"Land van herkomst voor:\n{film_titel}", parent=self.toplevel)
                 if land is None:
                     continue
 
@@ -1554,13 +1557,13 @@ class SumUpFilmApp:
                     film_id = db_create_film(film_titel, maccs.strip(), distr.strip(), land.strip())
                     film = {"id": film_id}
                 except Exception as e:
-                    messagebox.showerror("DB fout", f"Kon film niet opslaan:\n\n{e}")
+                    messagebox.showerror("DB fout", f"Kon film niet opslaan:\n\n{e}", parent=self.toplevel)
                     continue
 
             film_id = int(film["id"])
 
             if not zaal:
-                zaal = (simpledialog.askstring("Zaal ontbreekt", f"Welke zaal voor:\n{film_titel} ?", parent=self.root) or "").strip()
+                zaal = (simpledialog.askstring("Zaal ontbreekt", f"Welke zaal voor:\n{film_titel} ?", parent=self.toplevel) or "").strip()
 
             zaal_id = db_get_or_create_zaal(zaal) if zaal else None
 
@@ -1594,7 +1597,7 @@ class SumUpFilmApp:
                     source_file=self.current_import_source,
                 )
             except Exception as e:
-                messagebox.showerror("DB fout", f"Kon daily_sales niet opslaan voor {film_titel} ({zaal}):\n\n{e}")
+                messagebox.showerror("DB fout", f"Kon daily_sales niet opslaan voor {film_titel} ({zaal}):\n\n{e}", parent=self.toplevel)
                 continue
 
             item_id = self.tree.insert(
@@ -1631,7 +1634,6 @@ class SumUpFilmApp:
         self.status.set(f"Geladen + opgeslagen: {os.path.basename(path)} | Datum: {d.isoformat()} | Speelweek: {weeknummer}")
         self._update_totals()
 
-        # CineData blijft op huidige speelweek, maar user kan veranderen nadien
         self._set_cinedata_to_current_week()
         self.refresh_history()
 
@@ -1710,7 +1712,7 @@ class SumUpFilmApp:
                 price = simpledialog.askfloat(
                     "Eenheidsprijs nodig",
                     f"Geef eenheidsprijs voor {values[0]}",
-                    parent=self.root,
+                    parent=self.toplevel,
                 )
                 if price is None:
                     entry.destroy()
@@ -1730,10 +1732,9 @@ class SumUpFilmApp:
 
         self.tree.item(item, values=values)
         entry.destroy()
-        self.root.focus_set()
+        self.toplevel.focus_set()
         self._update_totals()
 
-        # DIRECT naar DB schrijven
         meta = self.item_meta.get(item)
         if not meta:
             self.status.set("⚠️ Geen meta-info om DB te updaten.")
@@ -1758,7 +1759,7 @@ class SumUpFilmApp:
             )
             self.status.set("Wijziging opgeslagen in DB.")
         except Exception as e:
-            messagebox.showerror("DB fout", f"Kon wijziging niet opslaan:\n\n{e}")
+            messagebox.showerror("DB fout", f"Kon wijziging niet opslaan:\n\n{e}", parent=self.toplevel)
 
         self.refresh_history()
 
@@ -1783,14 +1784,14 @@ class SumUpFilmApp:
         )
 
     def export_csv(self):
-        path = filedialog.asksaveasfilename(defaultextension=".csv")
+        path = filedialog.asksaveasfilename(defaultextension=".csv", parent=self.toplevel)
         if not path:
             return
         rows = []
         for item in self.tree.get_children():
             rows.append(dict(zip(self.columns, self.tree.item(item, "values"))))
         pd.DataFrame(rows).to_csv(path, index=False)
-        messagebox.showinfo("Export", "CSV succesvol opgeslagen.")
+        messagebox.showinfo("Export", "CSV succesvol opgeslagen.", parent=self.toplevel)
 
     # -----------------------------
     # CineData tab
@@ -1799,7 +1800,6 @@ class SumUpFilmApp:
         top = ttk.Frame(self.tab_history)
         top.pack(fill="x")
 
-        # start op huidige speelweek
         start, end = current_speelweek_dates(date.today())
 
         self.hist_from = DateField(top, "Van:", start)
@@ -1856,17 +1856,15 @@ class SumUpFilmApp:
         self.hist_tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        # dubbelklik op Speelweek kolom = aanpassen
         self.hist_tree.bind("<Double-1>", self._start_edit_weeknr)
 
-        # --- Rechtermuisklik kopiëren (ALLEEN 6 kolommen) ---
-        self.hist_menu = tk.Menu(self.root, tearoff=0)
+        self.hist_menu = tk.Menu(self.toplevel, tearoff=0)
         self.hist_menu.add_command(label="Kopieer", command=self.copy_hist_active_cell_to_clipboard)
 
         self.hist_tree.bind("<Button-1>", self._hist_on_left_click, add=True)
-        self.hist_tree.bind("<Button-3>", self._hist_on_right_click, add=True)         # Windows
-        self.hist_tree.bind("<Button-2>", self._hist_on_right_click, add=True)         # Mac (soms)
-        self.hist_tree.bind("<Control-Button-1>", self._hist_on_right_click, add=True) # Mac ctrl+klik
+        self.hist_tree.bind("<Button-3>", self._hist_on_right_click, add=True)
+        self.hist_tree.bind("<Button-2>", self._hist_on_right_click, add=True)
+        self.hist_tree.bind("<Control-Button-1>", self._hist_on_right_click, add=True)
 
     def _set_cinedata_to_current_week(self):
         start, end = current_speelweek_dates(date.today())
@@ -1881,13 +1879,13 @@ class SumUpFilmApp:
         f = self.hist_from.get_date()
         t = self.hist_to.get_date()
         if t < f:
-            messagebox.showerror("Fout", "‘Tot’ mag niet vóór ‘Van’ liggen.")
+            messagebox.showerror("Fout", "‘Tot’ mag niet vóór ‘Van’ liggen.", parent=self.toplevel)
             return
 
         try:
             rows = db_fetch_history(f, t)
         except Exception as e:
-            messagebox.showerror("DB fout", f"Kon CineData niet ophalen:\n\n{e}")
+            messagebox.showerror("DB fout", f"Kon CineData niet ophalen:\n\n{e}", parent=self.toplevel)
             return
 
         self._history_cache = rows
@@ -1921,7 +1919,6 @@ class SumUpFilmApp:
 
         self.hist_status.set(f"{len(rows)} records (van {f} tot {t})")
 
-    # ---- Speelweek edit (CineData) ----
     def _start_edit_weeknr(self, event):
         region = self.hist_tree.identify("region", event.x, event.y)
         if region != "cell":
@@ -1962,7 +1959,7 @@ class SumUpFilmApp:
         meta = self._hist_item_meta.get(item)
         if not meta:
             entry.destroy()
-            messagebox.showerror("Fout", "Geen speelweek_id gevonden voor deze rij.")
+            messagebox.showerror("Fout", "Geen speelweek_id gevonden voor deze rij.", parent=self.toplevel)
             return
 
         speelweek_id = int(meta["speelweek_id"])
@@ -1971,7 +1968,7 @@ class SumUpFilmApp:
             db_update_speelweek_weeknummer(speelweek_id, new_weeknr)
         except Exception as e:
             entry.destroy()
-            messagebox.showerror("DB fout", f"Kon speelweeknummer niet aanpassen:\n\n{e}")
+            messagebox.showerror("DB fout", f"Kon speelweeknummer niet aanpassen:\n\n{e}", parent=self.toplevel)
             return
 
         values = list(self.hist_tree.item(item, "values"))
@@ -1980,7 +1977,6 @@ class SumUpFilmApp:
         entry.destroy()
         self.hist_status.set("Speelweeknummer aangepast.")
 
-    # ---- Rechtermuisklik kopiëren (ALLEEN 6 kolommen) ----
     def _hist_on_left_click(self, event):
         self._hist_set_active_cell_from_event(event)
 
@@ -2043,29 +2039,29 @@ class SumUpFilmApp:
             return
 
         text = str(val)
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.root.update()
+        self.toplevel.clipboard_clear()
+        self.toplevel.clipboard_append(text)
+        self.toplevel.update()
         self.hist_status.set(f"Gekopieerd: {col_name} = {text}")
 
     def export_history_csv(self):
         if not self._history_cache:
-            messagebox.showinfo("Info", "Geen CineData om te exporteren.")
+            messagebox.showinfo("Info", "Geen CineData om te exporteren.", parent=self.toplevel)
             return
-        path = filedialog.asksaveasfilename(defaultextension=".csv")
+        path = filedialog.asksaveasfilename(defaultextension=".csv", parent=self.toplevel)
         if not path:
             return
         pd.DataFrame(self._history_cache).to_csv(path, index=False)
-        messagebox.showinfo("Export", "CineData CSV opgeslagen.")
+        messagebox.showinfo("Export", "CineData CSV opgeslagen.", parent=self.toplevel)
 
     def export_borderels_pdf_bo1(self):
         f = self.hist_from.get_date()
         t = self.hist_to.get_date()
         if t < f:
-            messagebox.showerror("Fout", "‘Tot’ mag niet vóór ‘Van’ liggen.")
+            messagebox.showerror("Fout", "‘Tot’ mag niet vóór ‘Van’ liggen.", parent=self.toplevel)
             return
 
-        folder = filedialog.askdirectory(title="Kies map voor borderels")
+        folder = filedialog.askdirectory(title="Kies map voor borderels", parent=self.toplevel)
         if not folder:
             return
 
@@ -2075,11 +2071,11 @@ class SumUpFilmApp:
         try:
             combos = db_fetch_borderel_combos(f, t)
         except Exception as e:
-            messagebox.showerror("DB fout", f"Kon borderel data niet ophalen:\n\n{e}")
+            messagebox.showerror("DB fout", f"Kon borderel data niet ophalen:\n\n{e}", parent=self.toplevel)
             return
 
         if not combos:
-            messagebox.showinfo("Info", "Geen records in deze periode om borderels te genereren.")
+            messagebox.showinfo("Info", "Geen records in deze periode om borderels te genereren.", parent=self.toplevel)
             return
 
         ok = 0
@@ -2110,10 +2106,10 @@ class SumUpFilmApp:
                 errors.append(f"{c_.get('interne_titel')} ({zaal_naam}) week {c_.get('weeknummer')}: {e}")
 
         if fail == 0:
-            messagebox.showinfo("Klaar", f"{ok} borderel(s) gegenereerd in:\n{folder}")
+            messagebox.showinfo("Klaar", f"{ok} borderel(s) gegenereerd in:\n{folder}", parent=self.toplevel)
         else:
             msg = f"{ok} gelukt, {fail} mislukt.\n\nMap:\n{folder}\n\nEerste fouten:\n- " + "\n- ".join(errors[:6])
-            messagebox.showwarning("Klaar (met fouten)", msg)
+            messagebox.showwarning("Klaar (met fouten)", msg, parent=self.toplevel)
 
     # -----------------------------
     # Instellingen tab
@@ -2185,7 +2181,7 @@ class SumUpFilmApp:
             if wc < 1:
                 raise ValueError()
         except Exception:
-            messagebox.showerror("Fout", "Week teller moet een positief getal zijn (>= 1).")
+            messagebox.showerror("Fout", "Week teller moet een positief getal zijn (>= 1).", parent=self.toplevel)
             return
         db_set_setting("week_counter", str(wc))
 
@@ -2195,7 +2191,7 @@ class SumUpFilmApp:
             if btw_rate < 0 or aut_rate < 0:
                 raise ValueError()
         except Exception:
-            messagebox.showerror("Fout", "BTW% en Auteurs% moeten geldige getallen zijn (bv 5,66 en 1,20).")
+            messagebox.showerror("Fout", "BTW% en Auteurs% moeten geldige getallen zijn (bv 5,66 en 1,20).", parent=self.toplevel)
             return
 
         try:
@@ -2204,7 +2200,7 @@ class SumUpFilmApp:
             if tv < 1 or tkid < 1:
                 raise ValueError()
         except Exception:
-            messagebox.showerror("Fout", "Ticket startnummers moeten >= 1 zijn.")
+            messagebox.showerror("Fout", "Ticket startnummers moeten >= 1 zijn.", parent=self.toplevel)
             return
 
         db_set_float_setting("btw_rate", btw_rate)
@@ -2219,9 +2215,21 @@ class SumUpFilmApp:
         self.refresh_history()
 
 
+# -----------------------------
+# Open window from main menu
+# -----------------------------
+def open_window(parent):
+    win = tk.Toplevel(parent)
+    win.title("Cinema BackOffice – SumUp Filmrapport")
+    win.geometry("1400x860")
+    SumUpFilmApp(win)
+    win.transient(parent)
+    return win
+
+
 def main():
     root = tk.Tk()
-    app = SumUpFilmApp(root)
+    SumUpFilmApp(root)
     root.mainloop()
 
 

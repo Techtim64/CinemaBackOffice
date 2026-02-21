@@ -579,7 +579,9 @@ class AfficheRenderer:
 
         min_table_h = header1_h + header2_h + FOOTER_H_PX + film_rows * ROW_H_MIN
         max_bottom_allowed = A4_H_PX - top_h - min_table_h
-        bottom_h = BOTTOM_MIN_OK if max_bottom_allowed < BOTTOM_MIN_OK else max(BOTTOM_MIN_OK, min(bottom_h_target, max_bottom_allowed))
+        bottom_h = BOTTOM_MIN_OK if max_bottom_allowed < BOTTOM_MIN_OK else max(
+            BOTTOM_MIN_OK, min(bottom_h_target, max_bottom_allowed)
+        )
 
         available_for_table = A4_H_PX - top_h - bottom_h
         row_h = min(
@@ -805,13 +807,13 @@ class AfficheRenderer:
 
 
 # -----------------------------
-# App
+# App (EMBEDDABLE: Frame)
 # -----------------------------
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title(APP_TITLE)
-        self.geometry("1280x820")
+class App(ttk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
+        self.master = master
+        self.pack(fill="both", expand=True)
 
         self.state_obj = AfficheState(
             start_date=dt.date.today().isoformat(),
@@ -863,7 +865,7 @@ class App(tk.Tk):
         try:
             if not self._root_paned:
                 return
-            total = self.winfo_width()
+            total = self.winfo_toplevel().winfo_width()
             self._root_paned.sashpos(0, int(total * 0.60))
         except Exception:
             pass
@@ -1041,7 +1043,8 @@ class App(tk.Tk):
         for cv in self.cell_vars:
             cv.trace_add("write", lambda *_: self._schedule_preview())
 
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        # ❌ NIET MEER: self.protocol(...) (Frame heeft dit niet)
+        # cleanup bij start
         self._cleanup_tmp_db_images()
 
     def _build_schedule_widgets_once(self):
@@ -1100,8 +1103,8 @@ class App(tk.Tk):
 
         for child in self.top_btn_frame.winfo_children():
             child.destroy()
-        self.top_buttons.clear()
 
+        self.top_buttons.clear()
         ttk.Label(self.top_btn_frame, text="Top:").pack(side="left", padx=(0, 8))
         for i in range(top_cols):
             btn = ttk.Button(self.top_btn_frame, text=f"{i+1}", command=lambda k=i: self.import_poster("top", k))
@@ -1110,8 +1113,8 @@ class App(tk.Tk):
 
         for child in self.bottom_btn_frame.winfo_children():
             child.destroy()
-        self.bottom_buttons.clear()
 
+        self.bottom_buttons.clear()
         ttk.Label(self.bottom_btn_frame, text="Bottom:").pack(side="left", padx=(0, 8))
         rowA = ttk.Frame(self.bottom_btn_frame)
         rowB = ttk.Frame(self.bottom_btn_frame)
@@ -1140,7 +1143,6 @@ class App(tk.Tk):
         f.is_3d = bool(self.is3d_var.get())
         f.good_icons = [fn for fn, var in self.icon_vars.items() if var.get()]
         f.cells = [cv.get() for cv in self.cell_vars]
-        # title_image is set by import_title_image()
 
     def _load_row_into_editor(self, idx: int):
         if idx < 0 or idx >= len(self.state_obj.films):
@@ -1454,8 +1456,35 @@ class App(tk.Tk):
         try:
             self._cleanup_tmp_db_images()
         finally:
-            self.destroy()
+            try:
+                self.winfo_toplevel().destroy()
+            except Exception:
+                pass
 
 
+# -----------------------------
+# Open window from main menu
+# -----------------------------
+def open_window(parent):
+    win = tk.Toplevel(parent)
+    win.title(APP_TITLE)
+    win.geometry("1280x820")
+
+    app = App(win)
+    win.protocol("WM_DELETE_WINDOW", app._on_close)
+
+    win.transient(parent)
+    # win.grab_set()  # zet aan als je modal wil
+    return win
+
+
+# -----------------------------
+# Standalone run (optional)
+# -----------------------------
 if __name__ == "__main__":
-    App().mainloop()
+    root = tk.Tk()
+    root.title(APP_TITLE)
+    root.geometry("1280x820")
+    app = App(root)
+    root.protocol("WM_DELETE_WINDOW", app._on_close)
+    root.mainloop()
