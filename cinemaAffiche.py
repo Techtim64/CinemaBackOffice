@@ -1,5 +1,6 @@
 import io
 import os
+import math
 import subprocess
 import logging
 import datetime as dt
@@ -33,26 +34,30 @@ logging.basicConfig(
 
 APP_TITLE = "Cinema Central — Affiche Generator"
 
-# Storage caps (fixed by your layout rules)
 MAX_TOP = 5       # top uses 4 or 5 slots
 MAX_BOTTOM = 10   # bottom uses 8 or 10 slots
 
-# A4 at 300 DPI
+# A4 @ 300 DPI
 DPI = 300
 A4_W_PX = int(8.27 * DPI)   # 2481
 A4_H_PX = int(11.69 * DPI)  # 3507
 
-# Layout
-TOP_POSTERS_H = int(A4_H_PX * 0.18)
+# Layout tuning
+TOP_POSTERS_H = int(A4_H_PX * 0.22)
 
-# Table layout constants (pixels; consistent)
-HEADER1_H_PX = 110   # black bar
-HEADER2_H_PX = 120   # column headers row
-ROW_H_TARGET = 36    # compact row height
-ROW_H_MIN = 28       # minimum row height if too many rows
+HEADER1_H_PX = 110
+HEADER2_H_PX = 125          # ✅ iets hoger voor grotere fonts
 
-# Bottom strip rules
-BOTTOM_MIN_OK = int(A4_H_PX * 0.16)  # keep bottom visible
+ROW_H_TARGET = 40           # ✅ iets hoger voor grotere fonts
+ROW_H_MIN = 30              # ✅ minimum ook wat hoger
+
+BOTTOM_MIN_OK = int(A4_H_PX * 0.14)
+BOTTOM_TARGET_MULT = 1.55
+
+HEADER_TEXT_Y_BIAS = -2
+CELL_TEXT_Y_BIAS = -2
+
+RED_3D = (200, 0, 0)
 
 DUTCH_MONTHS = {
     1: "Jan.", 2: "Feb.", 3: "Mrt.", 4: "Apr.", 5: "Mei", 6: "Jun.",
@@ -62,12 +67,10 @@ DUTCH_DAYS_SHORT = ["Ma", "Di", "Woe", "Don", "Vrij", "Zat", "Zon"]
 
 
 def top_cols_for_rows(n_rows: int) -> int:
-    # TOP: 1 rij, 4 of 5 posters
     return 4 if n_rows <= 12 else 5
 
 
 def bottom_cols_for_rows(n_rows: int) -> int:
-    # BOTTOM: R1 en R2 elk 4 of 5 posters
     return 4 if n_rows <= 12 else 5
 
 
@@ -87,7 +90,7 @@ def _load_font(size: int, bold=False):
 @dataclass
 class FilmRow:
     name: str = "NAAM"
-    duration: str = ""       # bv "1u30"
+    duration: str = ""
     version: str = "OV"
     is_3d: bool = False
     good_icons: List[str] = field(default_factory=list)
@@ -96,8 +99,8 @@ class FilmRow:
 
 @dataclass
 class PosterLayout:
-    top: List[str] = field(default_factory=lambda: [""] * MAX_TOP)        # slots 0..4
-    bottom: List[str] = field(default_factory=lambda: [""] * MAX_BOTTOM)  # slots 0..9
+    top: List[str] = field(default_factory=lambda: [""] * MAX_TOP)
+    bottom: List[str] = field(default_factory=lambda: [""] * MAX_BOTTOM)
 
 
 @dataclass
@@ -160,9 +163,13 @@ def rasterize_with_imagemagick_to_png(path: Path, size_px: int) -> Optional[byte
 class AfficheRenderer:
     def __init__(self, icons_dir: Path):
         self.icons_dir = icons_dir
-        self.font_header = _load_font(30, bold=True)
-        self.font_colhdr = _load_font(16, bold=True)
-        self.font_cell = _load_font(14, bold=False)
+
+        # ✅ Grotere fonts (leesbaar van ver)
+        self.font_header = _load_font(34, bold=True)
+        self.font_colhdr = _load_font(20, bold=True)
+        self.font_colhdr_small = _load_font(18, bold=True)
+        self.font_cell = _load_font(17, bold=False)
+
         self._icons_cache: Dict[str, Image.Image] = {}
 
     @staticmethod
@@ -171,6 +178,87 @@ class AfficheRenderer:
         arr = [base] * n
         arr[-1] += total - base * n
         return arr
+
+    @staticmethod
+    def _draw_cover(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
+        img = img.convert("RGB")
+        sw, sh = img.size
+        scale = max(target_w / sw, target_h / sh)
+        nw, nh = max(1, int(sw * scale)), max(1, int(sh * scale))
+        resized = img.resize((nw, nh), Image.LANCZOS)
+        left = (nw - target_w) // 2
+        top = (nh - target_h) // 2
+        return resized.crop((left, top, left + target_w, top + target_h))
+
+    def _draw_contain_edge_fill(self, img: Image.Image, target_w: int, target_h: int) -> Image.Image:
+        """
+        Poster volledig zichtbaar (contain) + edge-fill (geen zwart/blur).
+        """
+        img = img.convert("RGB")
+        sw, sh = img.size
+        scale = min(target_w / sw, target_h / sh)
+        nw, nh = max(1, int(sw * scale)), max(1, int(sh * scale))
+        fg = img.resize((nw, nh), Image.LANCZOS)
+
+        bg = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+        x_off = (target_w - nw) // 2
+        y_off = (target_h - nh) // 2
+        bg.paste(fg, (x_off, y_off))
+
+        if nw < target_w:
+            left_w = x_off
+            right_w = target_w - (x_off + nw)
+
+            if left_w > 0:
+                left_strip = fg.crop((0, 0, 1, nh)).resize((left_w, nh), Image.LANCZOS)
+                bg.paste(left_strip, (0, y_off))
+            if right_w > 0:
+                right_strip = fg.crop((nw - 1, 0, nw, nh)).resize((right_w, nh), Image.LANCZOS)
+                bg.paste(right_strip, (x_off + nw, y_off))
+
+            if nh < target_h:
+                top_h = y_off
+                bot_h = target_h - (y_off + nh)
+                if top_h > 0:
+                    top_band = bg.crop((0, y_off, target_w, y_off + 1)).resize((target_w, top_h), Image.LANCZOS)
+                    bg.paste(top_band, (0, 0))
+                if bot_h > 0:
+                    bot_band = bg.crop((0, y_off + nh - 1, target_w, y_off + nh)).resize((target_w, bot_h), Image.LANCZOS)
+                    bg.paste(bot_band, (0, y_off + nh))
+
+        elif nh < target_h:
+            top_h = y_off
+            bot_h = target_h - (y_off + nh)
+
+            if top_h > 0:
+                top_strip = fg.crop((0, 0, nw, 1)).resize((nw, top_h), Image.LANCZOS)
+                bg.paste(top_strip, (x_off, 0))
+            if bot_h > 0:
+                bot_strip = fg.crop((0, nh - 1, nw, nh)).resize((nw, bot_h), Image.LANCZOS)
+                bg.paste(bot_strip, (x_off, y_off + nh))
+
+            if x_off > 0:
+                left_band = bg.crop((x_off, 0, x_off + 1, target_h)).resize((x_off, target_h), Image.LANCZOS)
+                bg.paste(left_band, (0, 0))
+            right_w = target_w - (x_off + nw)
+            if right_w > 0:
+                right_band = bg.crop((x_off + nw - 1, 0, x_off + nw, target_h)).resize((right_w, target_h), Image.LANCZOS)
+                bg.paste(right_band, (x_off + nw, 0))
+
+        return bg
+
+    def _draw_poster_best_fit(self, img: Image.Image, w: int, h: int) -> Image.Image:
+        """
+        Top: best-fit (contain tenzij te veel leegte -> cover).
+        """
+        img = img.convert("RGB")
+        sw, sh = img.size
+        scale_contain = min(w / sw, h / sh)
+        nw, nh = max(1, int(sw * scale_contain)), max(1, int(sh * scale_contain))
+        empty_ratio = 1.0 - (nw * nh) / float(w * h)
+        if empty_ratio > 0.22:
+            return self._draw_cover(img, w, h)
+        return self._draw_contain_edge_fill(img, w, h)
 
     @staticmethod
     def _alpha_blit(dst_rgb: Image.Image, src_rgba: Image.Image, x: int, y: int):
@@ -217,118 +305,39 @@ class AfficheRenderer:
         except Exception:
             return None
 
-    # -----------------------------
-    # Poster scaling: FULL poster visible + minimal "empty space"
-    # Edge-fill instead of blur/black bars.
-    # -----------------------------
-    def _draw_contain_edge_fill(self, img: Image.Image, target_w: int, target_h: int) -> Image.Image:
-        """
-        Poster volledig zichtbaar (contain), zonder lelijke zwarte/lege balken:
-        - achtergrond wordt gevuld door edge-stretch (geen blur!)
-        - poster blijft 100% proportioneel
-        """
-        img = img.convert("RGB")
-        src_w, src_h = img.size
-
-        scale = min(target_w / src_w, target_h / src_h)
-        new_w, new_h = max(1, int(src_w * scale)), max(1, int(src_h * scale))
-        fg = img.resize((new_w, new_h), Image.LANCZOS)
-
-        bg = Image.new("RGB", (target_w, target_h), (0, 0, 0))
-
-        x_off = (target_w - new_w) // 2
-        y_off = (target_h - new_h) // 2
-
-        # Paste main poster
-        bg.paste(fg, (x_off, y_off))
-
-        # Horizontal bars (left/right)
-        if new_w < target_w:
-            left_w = x_off
-            right_w = target_w - (x_off + new_w)
-
-            if left_w > 0:
-                left_strip = fg.crop((0, 0, 1, new_h)).resize((left_w, new_h), Image.LANCZOS)
-                bg.paste(left_strip, (0, y_off))
-
-            if right_w > 0:
-                right_strip = fg.crop((new_w - 1, 0, new_w, new_h)).resize((right_w, new_h), Image.LANCZOS)
-                bg.paste(right_strip, (x_off + new_w, y_off))
-
-            # If also vertical bars exist, fill them by stretching one row of pixels from the composed area
-            if new_h < target_h:
-                top_h = y_off
-                bot_h = target_h - (y_off + new_h)
-
-                if top_h > 0:
-                    top_band = bg.crop((0, y_off, target_w, y_off + 1)).resize((target_w, top_h), Image.LANCZOS)
-                    bg.paste(top_band, (0, 0))
-                if bot_h > 0:
-                    bot_band = bg.crop((0, y_off + new_h - 1, target_w, y_off + new_h)).resize((target_w, bot_h), Image.LANCZOS)
-                    bg.paste(bot_band, (0, y_off + new_h))
-
-        # Vertical bars only (top/bottom)
-        elif new_h < target_h:
-            top_h = y_off
-            bot_h = target_h - (y_off + new_h)
-
-            if top_h > 0:
-                top_strip = fg.crop((0, 0, new_w, 1)).resize((new_w, top_h), Image.LANCZOS)
-                bg.paste(top_strip, (x_off, 0))
-            if bot_h > 0:
-                bot_strip = fg.crop((0, new_h - 1, new_w, new_h)).resize((new_w, bot_h), Image.LANCZOS)
-                bg.paste(bot_strip, (x_off, y_off + new_h))
-
-            # Fill left/right edges using nearest pixels already present
-            if x_off > 0:
-                left_band = bg.crop((x_off, 0, x_off + 1, target_h)).resize((x_off, target_h), Image.LANCZOS)
-                bg.paste(left_band, (0, 0))
-            right_w = target_w - (x_off + new_w)
-            if right_w > 0:
-                right_band = bg.crop((x_off + new_w - 1, 0, x_off + new_w, target_h)).resize((right_w, target_h), Image.LANCZOS)
-                bg.paste(right_band, (x_off + new_w, 0))
-
-        return bg
-
     def render(self, state: AfficheState) -> Image.Image:
         page = Image.new("RGB", (A4_W_PX, A4_H_PX), "white")
         draw = ImageDraw.Draw(page)
 
         film_rows = max(1, len(state.films))
+        top_cols = top_cols_for_rows(film_rows)
+        bottom_cols = bottom_cols_for_rows(film_rows)
 
-        top_cols = top_cols_for_rows(film_rows)              # 4 or 5
-        bottom_cols = bottom_cols_for_rows(film_rows)        # 4 or 5
-
-        # -------------------------
-        # Dynamic layout (table grows; bottom follows)
-        # -------------------------
         top_h = TOP_POSTERS_H
         header1_h = HEADER1_H_PX
         header2_h = HEADER2_H_PX
 
-        row_h = ROW_H_TARGET
+        bottom_h_target = int(top_h * BOTTOM_TARGET_MULT)
+
+        min_table_h = header1_h + header2_h + film_rows * ROW_H_MIN
+        max_bottom_allowed = A4_H_PX - top_h - min_table_h
+
+        if max_bottom_allowed < BOTTOM_MIN_OK:
+            bottom_h = BOTTOM_MIN_OK
+        else:
+            bottom_h = max(BOTTOM_MIN_OK, min(bottom_h_target, max_bottom_allowed))
+
+        available_for_table = A4_H_PX - top_h - bottom_h
+        row_h = min(ROW_H_TARGET, max(ROW_H_MIN, (available_for_table - header1_h - header2_h) // film_rows))
+
         table_y0 = top_h
-        table_h_needed = header1_h + header2_h + film_rows * row_h
-        table_y1 = table_y0 + table_h_needed
+        table_h = header1_h + header2_h + film_rows * row_h
+        table_y1 = table_y0 + table_h
 
         bottom_y0 = table_y1
         bottom_h = A4_H_PX - bottom_y0
 
-        if bottom_h < BOTTOM_MIN_OK:
-            space_for_table = A4_H_PX - BOTTOM_MIN_OK - top_h
-            max_rows_height = space_for_table - header1_h - header2_h
-            row_h = max(ROW_H_MIN, max_rows_height // film_rows)
-
-            table_h_needed = header1_h + header2_h + film_rows * row_h
-            table_y1 = table_y0 + table_h_needed
-            bottom_y0 = table_y1
-            bottom_h = A4_H_PX - bottom_y0
-            if bottom_h < 0:
-                bottom_h = 0
-
-        # -------------------------
-        # TOP posters (1 row, 4 or 5 columns) — SAME scaling as bottom
-        # -------------------------
+        # --- TOP posters (best-fit)
         col_widths = self._split_units(A4_W_PX, top_cols)
         x = 0
         for i in range(top_cols):
@@ -337,23 +346,21 @@ class AfficheRenderer:
             if p and os.path.isfile(p):
                 try:
                     img = Image.open(p)
-                    page.paste(self._draw_contain_edge_fill(img, w, top_h), (x, 0))
+                    page.paste(self._draw_poster_best_fit(img, w, top_h), (x, 0))
                 except Exception:
                     draw.rectangle([x, 0, x + w, top_h], fill=(220, 220, 220))
             else:
                 draw.rectangle([x, 0, x + w, top_h], fill=(235, 235, 235))
             x += w
 
-        # -------------------------
-        # TABLE
-        # -------------------------
+        # --- TABLE widths
         table_x0, table_x1 = 0, A4_W_PX
         table_w = table_x1 - table_x0
 
         film_w = int(table_w * 0.20)
         duur_w = int(table_w * 0.05)
         versie_w = int(table_w * 0.08)
-        good_w = int(table_w * 0.11)
+        good_w = int(table_w * 0.085)
         day_total = table_w - film_w - duur_w - versie_w - good_w
         day_widths = self._split_units(day_total, 14)
 
@@ -372,84 +379,85 @@ class AfficheRenderer:
         draw.rectangle([table_x0, table_y0, table_x1, table_y0 + header1_h], fill=(0, 0, 0))
         tw = draw.textlength(hdr, font=self.font_header)
         tx = table_x0 + (table_w - tw) / 2
-        ty = table_y0 + (header1_h - self.font_header.size) / 2
+        ty = table_y0 + (header1_h - self.font_header.size) / 2 + HEADER_TEXT_Y_BIAS
         draw.text((tx, ty), hdr, fill=(255, 255, 255), font=self.font_header)
 
         def cell_outline(x0, y0, x1, y1):
             draw.rectangle([x0, y0, x1, y1], outline=(210, 210, 210), width=1)
 
-        def draw_center_text(box, text, font, fill=(0, 0, 0)):
+        def draw_center_text(box, text, font, fill=(0, 0, 0), y_bias=0):
             x0, y0, x1, y1 = box
             lines = str(text).split("\n")
             line_h = font.size + 1
             total_h = line_h * len(lines)
-            yy = y0 + ((y1 - y0) - total_h) / 2
+            yy = y0 + ((y1 - y0) - total_h) / 2 + y_bias
             for ln in lines:
                 ttw = draw.textlength(ln, font=font)
                 xx = x0 + ((x1 - x0) - ttw) / 2
                 draw.text((xx, yy), ln, fill=fill, font=font)
                 yy += line_h
 
-        # Header2 uniform
+        # Header2
         y_hdr2 = table_y0 + header1_h
         draw.rectangle([table_x0, y_hdr2, table_x1, y_hdr2 + header2_h], fill=(250, 250, 250))
 
         x = table_x0
         box = (x, y_hdr2, x + film_w, y_hdr2 + header2_h)
-        cell_outline(*box); draw_center_text(box, "FILM", self.font_colhdr); x += film_w
+        cell_outline(*box); draw_center_text(box, "FILM", self.font_colhdr, y_bias=HEADER_TEXT_Y_BIAS); x += film_w
 
         box = (x, y_hdr2, x + duur_w, y_hdr2 + header2_h)
-        cell_outline(*box); draw_center_text(box, "DUUR", self.font_colhdr); x += duur_w
+        cell_outline(*box); draw_center_text(box, "DUUR", self.font_colhdr_small, y_bias=HEADER_TEXT_Y_BIAS); x += duur_w
 
         box = (x, y_hdr2, x + versie_w, y_hdr2 + header2_h)
-        cell_outline(*box); draw_center_text(box, "VERSIE", self.font_colhdr); x += versie_w
+        cell_outline(*box); draw_center_text(box, "VERSIE", self.font_colhdr, y_bias=HEADER_TEXT_Y_BIAS); x += versie_w
 
         box = (x, y_hdr2, x + good_w, y_hdr2 + header2_h)
-        cell_outline(*box); draw_center_text(box, "GOED\nGEZIEN", self.font_colhdr); x += good_w
+        cell_outline(*box); draw_center_text(box, "GOED\nGEZIEN", self.font_colhdr_small, y_bias=HEADER_TEXT_Y_BIAS); x += good_w
 
         dates = two_week_dates_from_start(start_date)
         for i in range(14):
             w = day_widths[i]
             box = (x, y_hdr2, x + w, y_hdr2 + header2_h)
             cell_outline(*box)
-            draw_center_text(box, day_col_label(dates[i]), self.font_cell)
+            draw_center_text(box, day_col_label(dates[i]), self.font_cell, y_bias=HEADER_TEXT_Y_BIAS)
             x += w
 
-        # Rows
         rows_y0 = table_y0 + header1_h + header2_h
         for r in range(film_rows):
             ry0 = rows_y0 + r * row_h
             ry1 = ry0 + row_h
-            fill = (245, 245, 245) if (r % 2 == 1) else (255, 255, 255)
-            draw.rectangle([table_x0, ry0, table_x1, ry1], fill=fill)
+            fill_row = (245, 245, 245) if (r % 2 == 1) else (255, 255, 255)
+            draw.rectangle([table_x0, ry0, table_x1, ry1], fill=fill_row)
 
             film = state.films[r]
+            is3d = bool(film.is_3d)
+            txt_color = RED_3D if is3d else (0, 0, 0)
+
             x = table_x0
 
             cell_outline(x, ry0, x + film_w, ry1)
-            draw_center_text((x, ry0, x + film_w, ry1), film.name, self.font_cell)
+            draw_center_text((x, ry0, x + film_w, ry1), film.name, self.font_cell, fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
             x += film_w
 
             cell_outline(x, ry0, x + duur_w, ry1)
-            draw_center_text((x, ry0, x + duur_w, ry1), film.duration, self.font_cell)
+            draw_center_text((x, ry0, x + duur_w, ry1), film.duration, self.font_cell, fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
             x += duur_w
 
             cell_outline(x, ry0, x + versie_w, ry1)
             vtxt = film.version + (" 3D" if film.is_3d else "")
-            vcol = (200, 0, 0) if film.is_3d else (0, 0, 0)
-            draw_center_text((x, ry0, x + versie_w, ry1), vtxt, self.font_cell, fill=vcol)
+            draw_center_text((x, ry0, x + versie_w, ry1), vtxt, self.font_cell, fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
             x += versie_w
 
             cell_outline(x, ry0, x + good_w, ry1)
             if film.good_icons:
-                icon_size = max(18, min(24, row_h - 8))
-                ix = x + 6
+                icon_size = max(16, min(22, row_h - 10))
+                ix = x + 3
                 iy = ry0 + (row_h - icon_size) // 2
-                for icon_fn in film.good_icons[:6]:
+                for icon_fn in film.good_icons[:5]:
                     icon_img = self._load_icon(icon_fn, icon_size)
                     if icon_img:
                         self._alpha_blit(page, icon_img, ix, iy)
-                        ix += icon_size + 4
+                        ix += icon_size + 2
             x += good_w
 
             for i in range(14):
@@ -457,12 +465,10 @@ class AfficheRenderer:
                 cell_outline(x, ry0, x + w, ry1)
                 t = (film.cells[i] or "").strip()
                 if t:
-                    draw_center_text((x, ry0, x + w, ry1), t, self.font_cell)
+                    draw_center_text((x, ry0, x + w, ry1), t, self.font_cell, fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
                 x += w
 
-        # -------------------------
-        # BOTTOM posters (2 rows; each 4 or 5 columns) — SAME scaling as top
-        # -------------------------
+        # --- BOTTOM posters: ✅ ALWAYS FULL poster (contain+edge-fill) to avoid cropping text
         if bottom_h > 0:
             draw.rectangle([0, bottom_y0, A4_W_PX, A4_H_PX], fill=(240, 240, 240))
 
@@ -470,7 +476,7 @@ class AfficheRenderer:
             row1_h, row2_h = slot_hs[0], slot_hs[1]
             col_widths = self._split_units(A4_W_PX, bottom_cols)
 
-            # R1 slots [0..bottom_cols-1]
+            # R1
             x = 0
             for c in range(bottom_cols):
                 w = col_widths[c]
@@ -486,7 +492,7 @@ class AfficheRenderer:
                     draw.rectangle([x, bottom_y0, x + w, bottom_y0 + row1_h], fill=(240, 240, 240))
                 x += w
 
-            # R2 slots [bottom_cols..2*bottom_cols-1]
+            # R2
             x = 0
             y2 = bottom_y0 + row1_h
             for c in range(bottom_cols):
@@ -529,12 +535,13 @@ class App(tk.Tk):
 
         self.state_obj = AfficheState(
             start_date=dt.date.today().isoformat(),
-            films=[FilmRow() for _ in range(8)]
+            films=[FilmRow() for _ in range(12)]
         )
         self.renderer = AfficheRenderer(ICONS_DIR)
 
         self.icon_files = self._scan_icons()
         self.icon_thumb_cache: Dict[str, ImageTk.PhotoImage] = {}
+
         self.preview_imgtk = None
         self._preview_after_id = None
 
@@ -630,7 +637,6 @@ class App(tk.Tk):
         ttk.Button(btns, text="+ Rij", command=self.add_row).pack(side="left")
         ttk.Button(btns, text="- Rij", command=self.remove_row).pack(side="left", padx=6)
 
-        # Film + duur
         row1 = ttk.Frame(edit_frame)
         row1.pack(fill="x")
 
@@ -657,6 +663,7 @@ class App(tk.Tk):
         ttk.Checkbutton(row2, text="3D (rood)", variable=self.is3d_var).pack(side="left", padx=6)
         ttk.Button(row2, text="Bewaar rij", command=self.save_current_row).pack(side="right")
 
+        # Icons (3 rows)
         icons_box = ttk.LabelFrame(edit_frame, text="Goed gezien (icons)", padding=8)
         icons_box.pack(fill="x", pady=(8, 8))
 
@@ -667,13 +674,17 @@ class App(tk.Tk):
         if not self.icon_files:
             ttk.Label(icons_grid, text=f"Geen icons gevonden in {ICONS_DIR}").pack(anchor="w")
         else:
-            cols = 6
+            rows = 3
+            cols = max(1, math.ceil(len(self.icon_files) / rows))
             for idx, fn in enumerate(self.icon_files):
                 var = tk.BooleanVar(value=False)
                 self.icon_vars[fn] = var
 
+                r = idx % rows
+                c = idx // rows
+
                 frame = ttk.Frame(icons_grid)
-                frame.grid(row=idx // cols, column=idx % cols, sticky="w", padx=8, pady=4)
+                frame.grid(row=r, column=c, sticky="w", padx=8, pady=3)
 
                 thumb = self._make_icon_thumb(fn, 18)
                 if thumb:
@@ -681,18 +692,12 @@ class App(tk.Tk):
                 ttk.Checkbutton(frame, text=os.path.splitext(fn)[0], variable=var,
                                 command=self._schedule_preview).pack(side="left")
 
-        sched_box = ttk.LabelFrame(edit_frame, text="Speeluren (14 dagen)", padding=8)
+        # Speeluren: 14 dagen in 2 rijen (7 + 7)
+        sched_box = ttk.LabelFrame(edit_frame, text="Speeluren (14 dagen) — 2 rijen (7+7)", padding=8)
         sched_box.pack(fill="both", expand=True)
 
-        self.sched_canvas = tk.Canvas(sched_box, highlightthickness=0, takefocus=0)
-        self.sched_canvas.pack(side="left", fill="both", expand=True)
-        sb_y = ttk.Scrollbar(sched_box, orient="vertical", command=self.sched_canvas.yview)
-        sb_y.pack(side="right", fill="y")
-        self.sched_canvas.configure(yscrollcommand=sb_y.set)
-
-        self.sched_inner = ttk.Frame(self.sched_canvas)
-        self.sched_canvas.create_window((0, 0), window=self.sched_inner, anchor="nw")
-        self.sched_inner.bind("<Configure>", lambda e: self.sched_canvas.configure(scrollregion=self.sched_canvas.bbox("all")))
+        self.sched_inner = ttk.Frame(sched_box)
+        self.sched_inner.pack(fill="x")
 
         self.day_labels: List[ttk.Label] = []
         self.cell_vars = [tk.StringVar(value="") for _ in range(14)]
@@ -712,12 +717,15 @@ class App(tk.Tk):
 
     def _build_schedule_widgets_once(self):
         for i in range(14):
+            row_block = 0 if i < 7 else 2
+            col = i if i < 7 else (i - 7)
+
             lbl = ttk.Label(self.sched_inner, text="", justify="center")
-            lbl.grid(row=0, column=i, padx=3, pady=2)
+            lbl.grid(row=row_block, column=col, padx=6, pady=2)
             self.day_labels.append(lbl)
 
             e = ttk.Entry(self.sched_inner, textvariable=self.cell_vars[i], width=7)
-            e.grid(row=1, column=i, padx=3, pady=2)
+            e.grid(row=row_block + 1, column=col, padx=6, pady=2)
 
             def _entry_click(ev, w=e):
                 w.focus_set()
@@ -763,10 +771,9 @@ class App(tk.Tk):
 
     def _rebuild_poster_buttons(self):
         film_rows = max(1, len(self.state_obj.films))
-        top_cols = top_cols_for_rows(film_rows)              # 4/5
-        bottom_cols = bottom_cols_for_rows(film_rows)        # 4/5
+        top_cols = top_cols_for_rows(film_rows)
+        bottom_cols = bottom_cols_for_rows(film_rows)
 
-        # TOP buttons: 1..4/5
         self._clear_button_frame(self.top_btn_frame, self.top_buttons)
         ttk.Label(self.top_btn_frame, text="Top:").pack(side="left", padx=(0, 8))
         for i in range(top_cols):
@@ -774,7 +781,6 @@ class App(tk.Tk):
             btn.pack(side="left", padx=2)
             self.top_buttons.append(btn)
 
-        # BOTTOM buttons: R1-1.. and R2-1..
         self._clear_button_frame(self.bottom_btn_frame, self.bottom_buttons)
         ttk.Label(self.bottom_btn_frame, text="Bottom:").pack(side="left", padx=(0, 8))
 
@@ -810,16 +816,21 @@ class App(tk.Tk):
         if idx < 0 or idx >= len(self.state_obj.films):
             return
         f = self.state_obj.films[idx]
+        if len(f.cells) < 14:
+            f.cells = (f.cells + [""] * 14)[:14]
+
         self.is_loading_row = True
         try:
             self.name_var.set(f.name)
             self.duration_var.set(getattr(f, "duration", ""))
             self.version_var.set(f.version)
             self.is3d_var.set(f.is_3d)
+
             for fn, var in self.icon_vars.items():
                 var.set(fn in f.good_icons)
+
             for i in range(14):
-                self.cell_vars[i].set(f.cells[i] if i < len(f.cells) else "")
+                self.cell_vars[i].set(f.cells[i])
         finally:
             self.is_loading_row = False
 
@@ -886,9 +897,9 @@ class App(tk.Tk):
     def import_poster(self, where: str, index: int):
         film_rows = max(1, len(self.state_obj.films))
         if where == "top":
-            limit = top_cols_for_rows(film_rows)          # 4/5
+            limit = top_cols_for_rows(film_rows)
         else:
-            limit = bottom_cols_for_rows(film_rows) * 2   # 8/10
+            limit = bottom_cols_for_rows(film_rows) * 2
 
         if index < 0 or index >= limit:
             return
