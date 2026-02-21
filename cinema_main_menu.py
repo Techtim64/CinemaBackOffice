@@ -1,10 +1,61 @@
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-# Importeer de open_window functies uit je 2 modules
-# (zorg dat deze bestanden in dezelfde map staan als dit main_menu bestand)
 from cinema_affiche import open_window as open_affiche_window
 from cinema_borderel import open_window as open_borderel_window
+
+
+def _mysql_config_from_env():
+    return {
+        "host": os.environ.get("MYSQL_HOST", "172.20.18.2"),
+        "port": int(os.environ.get("MYSQL_PORT", "3306")),
+        "user": os.environ.get("MYSQL_USER", "cinema_user"),
+        "password": os.environ.get("MYSQL_PASSWORD", "Cinema1919!"),
+        "database": os.environ.get("MYSQL_DATABASE", "cinema_db"),
+    }
+
+
+def _check_mysql_connection(timeout_sec: int = 3) -> tuple[bool, str]:
+    """
+    Returns: (ok, error_message)
+    """
+    try:
+        import mysql.connector  # mysql-connector-python
+    except Exception as e:
+        return False, f"MySQL driver ontbreekt (mysql-connector-python).\n\nDetails:\n{e}"
+
+    cfg = _mysql_config_from_env()
+    try:
+        cn = mysql.connector.connect(
+            host=cfg["host"],
+            port=cfg["port"],
+            user=cfg["user"],
+            password=cfg["password"],
+            database=cfg["database"],
+            connection_timeout=timeout_sec,
+        )
+        try:
+            cur = cn.cursor()
+            cur.execute("SELECT 1;")
+            cur.fetchone()
+        finally:
+            cn.close()
+        return True, ""
+    except Exception as e:
+        # Nette, duidelijke melding
+        msg = (
+            "Kan geen verbinding maken met de Cinema-database.\n\n"
+            f"Server: {cfg['host']}:{cfg['port']}\n"
+            f"Database: {cfg['database']}\n\n"
+            "Mogelijke oorzaken:\n"
+            "• Je zit extern: zet je VPN aan en probeer opnieuw.\n"
+            "• De database/server is tijdelijk niet bereikbaar.\n"
+            "• Je netwerk/credentials kloppen niet.\n\n"
+            "Als het probleem blijft aanhouden: contacteer de systeembeheerder.\n\n"
+            f"Technische details:\n{e}"
+        )
+        return False, msg
 
 
 class MainMenu(tk.Tk):
@@ -14,7 +65,6 @@ class MainMenu(tk.Tk):
         self.geometry("520x260")
         self.resizable(False, False)
 
-        # optioneel: onthoud windows zodat we ze kunnen hergebruiken / focussen
         self.affiche_win = None
         self.borderel_win = None
 
@@ -25,33 +75,18 @@ class MainMenu(tk.Tk):
         outer = ttk.Frame(self, padding=18)
         outer.pack(fill="both", expand=True)
 
-        ttk.Label(
-            outer,
-            text="Cinema BackOffice",
-            font=("TkDefaultFont", 18),
-        ).pack(anchor="w", pady=(0, 6))
-
-        ttk.Label(
-            outer,
-            text="Kies een module:",
-        ).pack(anchor="w", pady=(0, 14))
+        ttk.Label(outer, text="Cinema BackOffice", font=("TkDefaultFont", 18)).pack(anchor="w", pady=(0, 6))
+        ttk.Label(outer, text="Kies een module:").pack(anchor="w", pady=(0, 14))
 
         btns = ttk.Frame(outer)
         btns.pack(fill="x")
 
-        ttk.Button(
-            btns,
-            text="1. Affiches",
-            command=self.open_affiches,
-            width=22,
-        ).grid(row=0, column=0, padx=(0, 10), pady=6, sticky="w")
-
-        ttk.Button(
-            btns,
-            text="2. Borderellen",
-            command=self.open_borderellen,
-            width=22,
-        ).grid(row=0, column=1, pady=6, sticky="w")
+        ttk.Button(btns, text="1. Affiches", command=self.open_affiches, width=22).grid(
+            row=0, column=0, padx=(0, 10), pady=6, sticky="w"
+        )
+        ttk.Button(btns, text="2. Borderellen", command=self.open_borderellen, width=22).grid(
+            row=0, column=1, pady=6, sticky="w"
+        )
 
         ttk.Separator(outer, orient="horizontal").pack(fill="x", pady=14)
 
@@ -74,8 +109,18 @@ class MainMenu(tk.Tk):
         except Exception:
             pass
 
+    def _ensure_db_or_show_error(self) -> bool:
+        ok, err = _check_mysql_connection(timeout_sec=3)
+        if not ok:
+            messagebox.showerror("Database niet bereikbaar", err, parent=self)
+            self.status.set("Database niet bereikbaar. (VPN?)")
+            return False
+        return True
+
     def open_affiches(self):
-        # hergebruik bestaand venster als het nog open is
+        if not self._ensure_db_or_show_error():
+            return
+
         if self.affiche_win is not None and self.affiche_win.winfo_exists():
             self._bring_to_front(self.affiche_win)
             self.status.set("Affiches: venster actief.")
@@ -83,12 +128,14 @@ class MainMenu(tk.Tk):
 
         try:
             self.affiche_win = open_affiche_window(self)
-            self.affiche_win.protocol("WM_DELETE_WINDOW", self.affiche_win.destroy)
             self.status.set("Affiches geopend.")
         except Exception as e:
-            messagebox.showerror("Fout", f"Kon Affiches niet openen:\n\n{e}")
+            messagebox.showerror("Fout", f"Kon Affiches niet openen:\n\n{e}", parent=self)
 
     def open_borderellen(self):
+        if not self._ensure_db_or_show_error():
+            return
+
         if self.borderel_win is not None and self.borderel_win.winfo_exists():
             self._bring_to_front(self.borderel_win)
             self.status.set("Borderellen: venster actief.")
@@ -96,13 +143,12 @@ class MainMenu(tk.Tk):
 
         try:
             self.borderel_win = open_borderel_window(self)
-            self.borderel_win.protocol("WM_DELETE_WINDOW", self.borderel_win.destroy)
             self.status.set("Borderellen geopend.")
         except Exception as e:
-            messagebox.showerror("Fout", f"Kon Borderellen niet openen:\n\n{e}")
+            messagebox.showerror("Fout", f"Kon Borderellen niet openen:\n\n{e}", parent=self)
 
     def _on_close(self):
-        # Sluit alles netjes
+        # Sluit alle open vensters
         try:
             if self.affiche_win is not None and self.affiche_win.winfo_exists():
                 self.affiche_win.destroy()
