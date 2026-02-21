@@ -1,12 +1,15 @@
 import io
 import os
+import json
 import math
+import base64
+import mimetypes
 import subprocess
 import logging
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -16,17 +19,33 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 
+# -----------------------------
+# Optional MySQL connector
+# -----------------------------
+# Install: pip install mysql-connector-python
+try:
+    import mysql.connector
+    from mysql.connector import Error as MySQLError
+except Exception:
+    mysql = None
+    mysql_connector_available = False
+else:
+    mysql_connector_available = True
+
 
 # -----------------------------
-# Paths + logging (cross-platform)
+# Paths + logging
 # -----------------------------
 BASE_DIR = Path(__file__).resolve().parent
 ICONS_DIR = BASE_DIR / "icons"
-FONTS_DIR = BASE_DIR / "fonts"   # optional: drop Inter-Regular.ttf here
+FONTS_DIR = BASE_DIR / "fonts"
 LOGS_DIR = BASE_DIR / "logs"
+TMP_DIR = BASE_DIR / "tmp_db_images"
+
 LOGS_DIR.mkdir(exist_ok=True)
 ICONS_DIR.mkdir(exist_ok=True)
 FONTS_DIR.mkdir(exist_ok=True)
+TMP_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(
     filename=str(LOGS_DIR / "cinema_affiche.log"),
@@ -36,19 +55,17 @@ logging.basicConfig(
 
 APP_TITLE = "Cinema Central — Affiche Generator"
 
-# layout slots by your rules
+# slots by your rules
 MAX_TOP = 5
 MAX_BOTTOM = 10
 
 # A4 @ 300 DPI
 DPI = 300
-A4_W_PX = int(8.27 * DPI)   # 2481
-A4_H_PX = int(11.69 * DPI)  # 3507
+A4_W_PX = int(8.27 * DPI)
+A4_H_PX = int(11.69 * DPI)
 
-# Layout tuning
 TOP_POSTERS_H = int(A4_H_PX * 0.22)
 
-# Big, readable typography => bigger header/rows too
 HEADER1_H_PX = 140
 HEADER2_H_PX = 190
 ROW_H_TARGET = 78
@@ -67,6 +84,30 @@ DUTCH_MONTHS = {
     7: "Jul.", 8: "Aug.", 9: "Sep.", 10: "Okt.", 11: "Nov.", 12: "Dec."
 }
 DUTCH_DAYS_SHORT = ["Ma", "Di", "Woe", "Don", "Vrij", "Zat", "Zon"]
+
+
+# -----------------------------
+# MySQL config (env vars)
+# -----------------------------
+def get_mysql_config() -> Dict[str, str]:
+    """
+    Configure via env vars:
+      MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
+
+    Example:
+      export MYSQL_HOST=172.20.18.2
+      export MYSQL_PORT=3306
+      export MYSQL_USER=cinema_user
+      export MYSQL_PASSWORD=Cinema1919!
+      export MYSQL_DATABASE=cinema_db
+    """
+    return {
+        "host": os.environ.get("MYSQL_HOST", "172.20.18.2"),
+        "port": int(os.environ.get("MYSQL_PORT", "3306")),
+        "user": os.environ.get("MYSQL_USER", "cinema_user"),
+        "password": os.environ.get("MYSQL_PASSWORD", "Cinema1919!"),
+        "database": os.environ.get("MYSQL_DATABASE", "cinema_db"),
+    }
 
 
 def top_cols_for_rows(n_rows: int) -> int:
@@ -92,13 +133,7 @@ def _try_font_file(path: Path, size: int) -> Optional[ImageFont.FreeTypeFont]:
 
 
 def load_modern_font(size: int) -> ImageFont.ImageFont:
-    """
-    Modern, elegant, no bold:
-    - Prefer project fonts in ./fonts (recommended: Inter-Regular.ttf)
-    - macOS fallback: SF Pro / Avenir Next / Helvetica Neue
-    - cross-platform fallback: DejaVuSans / Arial
-    """
-    # 1) Project fonts (best: consistent across OS)
+    # 1) project fonts
     for fn in [
         "Inter-Regular.ttf",
         "Inter.ttf",
@@ -124,7 +159,7 @@ def load_modern_font(size: int) -> ImageFont.ImageFont:
         if f:
             return f
 
-    # 3) Common fallbacks
+    # 3) fallback
     for name in ["DejaVuSans.ttf", "Arial.ttf"]:
         f = _try_font_by_name(name, size)
         if f:
@@ -206,11 +241,162 @@ def rasterize_with_imagemagick_to_png(path: Path, size_px: int) -> Optional[byte
     return None
 
 
+# -----------------------------
+# MySQL storage layer
+# -----------------------------
+class MySQLStore:
+    """
+    Tables:
+      affiches(start_date DATE PRIMARY KEY, state_json LONGTEXT, updated_at TIMESTAMP)
+      affiche_images(start_date DATE, slot_type ENUM('top','bottom'), slot_index INT,
+                    filename VARCHAR(255), mime VARCHAR(80), data LONGBLOB,
+                    PRIMARY KEY(start_date, slot_type, slot_index))
+    """
+    def __init__(self, cfg: Dict[str, str]):
+        self.cfg = cfg
+
+    def connect(self):
+        if not mysql_connector_available:
+            raise RuntimeError("mysql-connector-python is niet geïnstalleerd. Doe: pip install mysql-connector-python")
+        return mysql.connector.connect(**self.cfg)
+
+    def ensure_schema(self):
+        cn = self.connect()
+        try:
+            cur = cn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS affiches (
+                    start_date DATE PRIMARY KEY,
+                    state_json LONGTEXT NOT NULL,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS affiche_images (
+                    start_date DATE NOT NULL,
+                    slot_type ENUM('top','bottom') NOT NULL,
+                    slot_index INT NOT NULL,
+                    filename VARCHAR(255),
+                    mime VARCHAR(80),
+                    data LONGBLOB,
+                    PRIMARY KEY (start_date, slot_type, slot_index),
+                    CONSTRAINT fk_affiches_start_date
+                      FOREIGN KEY (start_date) REFERENCES affiches(start_date)
+                      ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cn.commit()
+        finally:
+            cn.close()
+
+    @staticmethod
+    def _guess_mime(filename: str) -> str:
+        mime, _ = mimetypes.guess_type(filename)
+        return mime or "application/octet-stream"
+
+    @staticmethod
+    def _read_file_bytes(path: str) -> Tuple[bytes, str, str]:
+        """
+        Returns: (data_bytes, filename, mime)
+        """
+        fn = os.path.basename(path)
+        mime = MySQLStore._guess_mime(fn)
+        with open(path, "rb") as f:
+            data = f.read()
+        return data, fn, mime
+
+    def save_affiche(self, start_date: dt.date, state_json: str,
+                     top_paths: List[str], bottom_paths: List[str]) -> None:
+        cn = self.connect()
+        try:
+            cn.start_transaction()
+            cur = cn.cursor()
+
+            # upsert state
+            cur.execute("""
+                INSERT INTO affiches (start_date, state_json)
+                VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE state_json=VALUES(state_json);
+            """, (start_date, state_json))
+
+            # clear images for this start_date then insert current
+            cur.execute("DELETE FROM affiche_images WHERE start_date=%s;", (start_date,))
+
+            # top slots
+            for idx, p in enumerate(top_paths):
+                if not p:
+                    continue
+                data, fn, mime = self._read_file_bytes(p)
+                cur.execute("""
+                    INSERT INTO affiche_images (start_date, slot_type, slot_index, filename, mime, data)
+                    VALUES (%s, 'top', %s, %s, %s, %s);
+                """, (start_date, idx, fn, mime, data))
+
+            # bottom slots
+            for idx, p in enumerate(bottom_paths):
+                if not p:
+                    continue
+                data, fn, mime = self._read_file_bytes(p)
+                cur.execute("""
+                    INSERT INTO affiche_images (start_date, slot_type, slot_index, filename, mime, data)
+                    VALUES (%s, 'bottom', %s, %s, %s, %s);
+                """, (start_date, idx, fn, mime, data))
+
+            cn.commit()
+        except Exception:
+            cn.rollback()
+            raise
+        finally:
+            cn.close()
+
+    def load_affiche(self, start_date: dt.date) -> Tuple[str, Dict[Tuple[str, int], Tuple[str, str, bytes]]]:
+        """
+        Returns: (state_json, images_map)
+        images_map key: (slot_type, slot_index)
+        value: (filename, mime, data)
+        """
+        cn = self.connect()
+        try:
+            cur = cn.cursor()
+            cur.execute("SELECT state_json FROM affiches WHERE start_date=%s;", (start_date,))
+            row = cur.fetchone()
+            if not row:
+                raise KeyError(f"Geen affiche gevonden voor {start_date.isoformat()}")
+            state_json = row[0]
+
+            cur.execute("""
+                SELECT slot_type, slot_index, filename, mime, data
+                FROM affiche_images
+                WHERE start_date=%s;
+            """, (start_date,))
+            images_map: Dict[Tuple[str, int], Tuple[str, str, bytes]] = {}
+            for slot_type, slot_index, filename, mime, data in cur.fetchall():
+                images_map[(slot_type, int(slot_index))] = (filename or "", mime or "", data or b"")
+            return state_json, images_map
+        finally:
+            cn.close()
+
+
+def safe_write_blob_to_tmp(start_date: str, slot_type: str, idx: int, filename: str, blob: bytes) -> str:
+    """
+    Writes DB blob to tmp folder and returns filepath.
+    We keep extension from filename if possible.
+    """
+    ext = Path(filename).suffix if filename else ".img"
+    safe_name = f"{start_date}_{slot_type}_{idx}{ext}"
+    out_path = TMP_DIR / safe_name
+    with open(out_path, "wb") as f:
+        f.write(blob)
+    return str(out_path)
+
+
+# -----------------------------
+# Renderer
+# -----------------------------
 class AfficheRenderer:
     def __init__(self, icons_dir: Path):
         self.icons_dir = icons_dir
 
-        # big, readable, elegant, no bold
         self.font_header = load_modern_font(52)
         self.font_colhdr = load_modern_font(30)
         self.font_colhdr_small = load_modern_font(26)
@@ -237,7 +423,6 @@ class AfficheRenderer:
         return resized.crop((left, top, left + target_w, top + target_h))
 
     def _draw_contain_edge_fill(self, img: Image.Image, target_w: int, target_h: int) -> Image.Image:
-        """Full poster visible + edge-fill (no blur, no black bars)."""
         img = img.convert("RGB")
         sw, sh = img.size
         scale = min(target_w / sw, target_h / sh)
@@ -289,9 +474,6 @@ class AfficheRenderer:
         return bg
 
     def _draw_poster_best_fit_top(self, img: Image.Image, w: int, h: int) -> Image.Image:
-        """
-        TOP: contain unless it's too empty -> cover.
-        """
         img = img.convert("RGB")
         sw, sh = img.size
         scale_contain = min(w / sw, h / sh)
@@ -359,7 +541,6 @@ class AfficheRenderer:
         header2_h = HEADER2_H_PX
 
         bottom_h_target = int(top_h * BOTTOM_TARGET_MULT)
-
         min_table_h = header1_h + header2_h + film_rows * ROW_H_MIN
         max_bottom_allowed = A4_H_PX - top_h - min_table_h
         bottom_h = BOTTOM_MIN_OK if max_bottom_allowed < BOTTOM_MIN_OK else max(BOTTOM_MIN_OK, min(bottom_h_target, max_bottom_allowed))
@@ -374,7 +555,7 @@ class AfficheRenderer:
         bottom_y0 = table_y1
         bottom_h = A4_H_PX - bottom_y0
 
-        # TOP posters (best-fit)
+        # TOP posters
         col_widths = self._split_units(A4_W_PX, top_cols)
         x = 0
         for i in range(top_cols):
@@ -504,7 +685,7 @@ class AfficheRenderer:
                     draw_center_text((x, ry0, x + w, ry1), t, self.font_cell, fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
                 x += w
 
-        # BOTTOM posters: always full poster visible (no cropping)
+        # BOTTOM posters: always full poster visible
         if bottom_h > 0:
             draw.rectangle([0, bottom_y0, A4_W_PX, A4_H_PX], fill=(240, 240, 240))
             slot_hs = self._split_units(bottom_h, 2)
@@ -549,6 +730,9 @@ class AfficheRenderer:
         return buf.getvalue()
 
 
+# -----------------------------
+# App
+# -----------------------------
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -578,8 +762,19 @@ class App(tk.Tk):
         self.top_buttons: List[ttk.Button] = []
         self.bottom_buttons: List[ttk.Button] = []
 
+        # DB store
+        self.db_store: Optional[MySQLStore] = None
+        if mysql_connector_available:
+            self.db_store = MySQLStore(get_mysql_config())
+            try:
+                self.db_store.ensure_schema()
+            except Exception as e:
+                logging.exception(f"MySQL schema init failed: {e}")
+                self.db_store = None
+
         self._build_ui()
-        self.after(60, self._set_default_split)  # ✅ default "goed"
+        self.after(60, self._set_default_split)
+
         self._refresh_film_list()
         self.film_list.selection_set(0)
         self._load_row_into_editor(0)
@@ -587,14 +782,12 @@ class App(tk.Tk):
         self._rebuild_poster_buttons()
         self._schedule_preview()
 
-    # ---- GUI split default
     def _set_default_split(self):
         try:
             if not self._root_paned:
                 return
             total = self.winfo_width()
-            x = int(total * 0.60)  # 60% editor, 40% preview
-            self._root_paned.sashpos(0, x)
+            self._root_paned.sashpos(0, int(total * 0.60))
         except Exception:
             pass
 
@@ -634,7 +827,6 @@ class App(tk.Tk):
         left = ttk.Frame(self._root_paned, padding=8)
         right = ttk.Frame(self._root_paned, padding=8)
 
-        # ✅ preview standaard breder
         self._root_paned.add(left, weight=2)
         self._root_paned.add(right, weight=3)
 
@@ -648,6 +840,19 @@ class App(tk.Tk):
 
         ttk.Button(ctrl, text="↻ Preview", command=self._schedule_preview).pack(side="left", padx=6)
         ttk.Button(ctrl, text="Exporteer PDF…", command=self.export_pdf).pack(side="right")
+
+        # DB buttons
+        db_bar = ttk.Frame(left)
+        db_bar.pack(fill="x", pady=(0, 8))
+
+        self.btn_db_save = ttk.Button(db_bar, text="💾 Opslaan in MySQL", command=self.save_to_mysql)
+        self.btn_db_load = ttk.Button(db_bar, text="📂 Open uit MySQL", command=self.load_from_mysql)
+        self.btn_db_save.pack(side="left")
+        self.btn_db_load.pack(side="left", padx=8)
+
+        if not self.db_store:
+            self.btn_db_save.configure(state="disabled")
+            self.btn_db_load.configure(state="disabled")
 
         posters_frame = ttk.LabelFrame(left, text="Posters", padding=8)
         posters_frame.pack(fill="x", pady=(0, 8))
@@ -729,7 +934,7 @@ class App(tk.Tk):
                 ttk.Checkbutton(frame, text=os.path.splitext(fn)[0], variable=var,
                                 command=self._schedule_preview).pack(side="left")
 
-        # Speeluren: 14 dagen in 2 rijen (7 + 7)
+        # Speeluren: 14 days in 2 rows (7+7)
         sched_box = ttk.LabelFrame(edit_frame, text="Speeluren (14 dagen) — 2 rijen (7+7)", padding=8)
         sched_box.pack(fill="both", expand=True)
 
@@ -968,7 +1173,7 @@ class App(tk.Tk):
 
         avail = self.preview_label.winfo_width()
         if avail < 200:
-            avail = 700  # fallback first layout pass
+            avail = 700
         scale = (avail - 20) / img.size[0]
         prev = img.resize((int(img.size[0] * scale), int(img.size[1] * scale)), Image.LANCZOS)
 
@@ -991,6 +1196,138 @@ class App(tk.Tk):
             f.write(pdf_bytes)
         messagebox.showinfo("OK", f"PDF opgeslagen:\n{out}")
 
+    # -----------------------------
+    # MySQL save/load
+    # -----------------------------
+    def _serialize_state_json(self) -> str:
+        """
+        Serialize state WITHOUT image bytes; image bytes are stored separately.
+        We store only poster slot markers (filename placeholders) so the GUI still shows 'has image'.
+        """
+        self._save_editor_into_row(self.current_row_index)
+        try:
+            self.state_obj.start_date = parse_date_iso(self.start_var.get().strip()).isoformat()
+        except Exception:
+            pass
 
+        obj = {
+            "start_date": self.state_obj.start_date,
+            "films": [asdict(f) for f in self.state_obj.films],
+            "posters": {
+                "top": [os.path.basename(p) if p else "" for p in self.state_obj.posters.top],
+                "bottom": [os.path.basename(p) if p else "" for p in self.state_obj.posters.bottom],
+            }
+        }
+        return json.dumps(obj, ensure_ascii=False)
+
+    def save_to_mysql(self):
+        if not self.db_store:
+            messagebox.showerror("MySQL", "MySQL is niet beschikbaar. Installeer mysql-connector-python en zet env vars.")
+            return
+
+        try:
+            d = parse_date_iso(self.start_var.get().strip())
+        except Exception:
+            messagebox.showerror("Startdatum", "Ongeldige startdatum. Gebruik YYYY-MM-DD.")
+            return
+
+        state_json = self._serialize_state_json()
+
+        # Save actual image blobs from current paths
+        film_rows = max(1, len(self.state_obj.films))
+        top_cols = top_cols_for_rows(film_rows)
+        bottom_cols = bottom_cols_for_rows(film_rows)
+
+        top_paths = (self.state_obj.posters.top[:top_cols] + [""] * MAX_TOP)[:MAX_TOP]
+        bottom_paths = (self.state_obj.posters.bottom[:(bottom_cols * 2)] + [""] * MAX_BOTTOM)[:MAX_BOTTOM]
+
+        try:
+            self.db_store.save_affiche(d, state_json, top_paths, bottom_paths)
+            messagebox.showinfo("MySQL", f"Affiche opgeslagen voor {d.isoformat()}.")
+        except Exception as e:
+            logging.exception(f"MySQL save failed: {e}")
+            messagebox.showerror("MySQL", f"Opslaan mislukt:\n{e}")
+
+    def load_from_mysql(self):
+        if not self.db_store:
+            messagebox.showerror("MySQL", "MySQL is niet beschikbaar. Installeer mysql-connector-python en zet env vars.")
+            return
+
+        try:
+            d = parse_date_iso(self.start_var.get().strip())
+        except Exception:
+            messagebox.showerror("Startdatum", "Ongeldige startdatum. Gebruik YYYY-MM-DD.")
+            return
+
+        try:
+            state_json, images_map = self.db_store.load_affiche(d)
+        except KeyError as e:
+            messagebox.showinfo("MySQL", str(e))
+            return
+        except Exception as e:
+            logging.exception(f"MySQL load failed: {e}")
+            messagebox.showerror("MySQL", f"Laden mislukt:\n{e}")
+            return
+
+        # Build state from JSON
+        try:
+            obj = json.loads(state_json)
+        except Exception as e:
+            messagebox.showerror("MySQL", f"State JSON corrupt:\n{e}")
+            return
+
+        # Apply state
+        self.is_loading_row = True
+        try:
+            self.start_var.set(obj.get("start_date", d.isoformat()))
+
+            films = []
+            for fobj in obj.get("films", []):
+                # Backward-safe
+                cells = fobj.get("cells", [""] * 14)
+                if len(cells) < 14:
+                    cells = (cells + [""] * 14)[:14]
+                films.append(FilmRow(
+                    name=fobj.get("name", "NAAM"),
+                    duration=fobj.get("duration", ""),
+                    version=fobj.get("version", "OV"),
+                    is_3d=bool(fobj.get("is_3d", False)),
+                    good_icons=list(fobj.get("good_icons", [])),
+                    cells=list(cells),
+                ))
+            if not films:
+                films = [FilmRow()]
+
+            self.state_obj.films = films
+
+            # Restore images to temp files + assign paths
+            self.state_obj.posters.top = [""] * MAX_TOP
+            self.state_obj.posters.bottom = [""] * MAX_BOTTOM
+
+            for (slot_type, idx), (fn, mime, blob) in images_map.items():
+                if not blob:
+                    continue
+                path = safe_write_blob_to_tmp(d.isoformat(), slot_type, idx, fn, blob)
+                if slot_type == "top" and 0 <= idx < MAX_TOP:
+                    self.state_obj.posters.top[idx] = path
+                if slot_type == "bottom" and 0 <= idx < MAX_BOTTOM:
+                    self.state_obj.posters.bottom[idx] = path
+
+        finally:
+            self.is_loading_row = False
+
+        # refresh UI
+        self._refresh_film_list()
+        self._rebuild_poster_buttons()
+        self.current_row_index = 0
+        self.film_list.selection_clear(0, tk.END)
+        self.film_list.selection_set(0)
+        self._load_row_into_editor(0)
+        self._schedule_preview()
+        messagebox.showinfo("MySQL", f"Affiche geladen voor {d.isoformat()}.")
+
+# -----------------------------
+# Main
+# -----------------------------
 if __name__ == "__main__":
     App().mainloop()
