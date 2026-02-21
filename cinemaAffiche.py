@@ -46,11 +46,11 @@ TOP_POSTERS_H = int(A4_H_PX * 0.18)
 # Table style constants
 HEADER1_H_PX = 110   # black bar
 HEADER2_H_PX = 120   # column headers row
-ROW_H_TARGET = 36    # nice compact row height
-ROW_H_MIN = 28       # minimum if too many rows
+ROW_H_TARGET = 36    # compact row height
+ROW_H_MIN = 28       # minimum row height if too many rows
 
 # Bottom strip rules
-BOTTOM_MIN_OK = int(A4_H_PX * 0.16)  # keep 2-row posters visible
+BOTTOM_MIN_OK = int(A4_H_PX * 0.16)  # keep bottom visible
 BOTTOM_DEFAULT = int(A4_H_PX * 0.20)
 
 DUTCH_MONTHS = {
@@ -149,12 +149,9 @@ def rasterize_with_imagemagick_to_png(path: Path, size_px: int) -> Optional[byte
 class AfficheRenderer:
     def __init__(self, icons_dir: Path):
         self.icons_dir = icons_dir
-
-        # Fonts
-        self.font_header = _load_font(30, bold=True)     # white text on black bar
-        self.font_colhdr = _load_font(16, bold=True)     # uniform header2
-        self.font_cell = _load_font(14, bold=False)      # cell text
-
+        self.font_header = _load_font(30, bold=True)
+        self.font_colhdr = _load_font(16, bold=True)
+        self.font_cell = _load_font(14, bold=False)
         self._icons_cache: Dict[str, Image.Image] = {}
 
     @staticmethod
@@ -187,14 +184,31 @@ class AfficheRenderer:
         return canvas_img
 
     @staticmethod
-    def _draw_contain_with_blur_bg(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
-        # background: cover + blur
+    def _draw_smart_fit(img: Image.Image, target_w: int, target_h: int, max_empty_ratio: float = 0.10) -> Image.Image:
+        """
+        Proportioneel, met minimum 'lege' ruimte:
+        - Als contain weinig leegte geeft -> contain
+        - Anders -> blurred cover achtergrond + contain voorgrond
+        """
+        src_w, src_h = img.size
+        scale = min(target_w / src_w, target_h / src_h)
+        new_w, new_h = int(src_w * scale), int(src_h * scale)
+        empty_ratio = 1.0 - (new_w * new_h) / float(target_w * target_h)
+
+        if empty_ratio <= max_empty_ratio:
+            return AfficheRenderer._draw_contain(img, target_w, target_h, bg=(245, 245, 245))
+
+        # blurred background (cover)
         bg = AfficheRenderer._draw_cover(img, target_w, target_h).filter(ImageFilter.GaussianBlur(radius=18))
-        # foreground: contain (with black bg), then alpha composite on bg
-        fg = AfficheRenderer._draw_contain(img, target_w, target_h, bg=(0, 0, 0)).convert("RGBA")
-        bg_rgba = bg.convert("RGBA")
-        bg_rgba.alpha_composite(fg, (0, 0))
-        return bg_rgba.convert("RGB")
+        # foreground poster (contain)
+        fg = AfficheRenderer._draw_contain(img, target_w, target_h, bg=(0, 0, 0))
+        # Paste fg on bg, but fg has black margins; instead: paste the resized poster directly
+        canvas = bg.copy()
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        x = (target_w - new_w) // 2
+        y = (target_h - new_h) // 2
+        canvas.paste(resized, (x, y))
+        return canvas
 
     @staticmethod
     def _alpha_blit(dst_rgb: Image.Image, src_rgba: Image.Image, x: int, y: int):
@@ -213,7 +227,6 @@ class AfficheRenderer:
         if not path.exists():
             return None
 
-        # Try Pillow
         try:
             img = Image.open(path).convert("RGBA")
             img = img.resize((size_px, size_px), Image.LANCZOS)
@@ -222,7 +235,6 @@ class AfficheRenderer:
         except Exception:
             pass
 
-        # SVG via cairosvg
         if path.suffix.lower() == ".svg":
             png_bytes = _try_svg_to_png_bytes(path, size_px, size_px)
             if png_bytes:
@@ -233,7 +245,6 @@ class AfficheRenderer:
                 except Exception:
                     pass
 
-        # ImageMagick fallback
         png_bytes = rasterize_with_imagemagick_to_png(path, size_px)
         if not png_bytes:
             return None
@@ -249,10 +260,10 @@ class AfficheRenderer:
         draw = ImageDraw.Draw(page)
 
         film_rows = max(1, len(state.films))
+        posters_to_show = min(MAX_BOTTOM, film_rows)
 
         # -------------------------
-        # Dynamic layout (NO big whitespace):
-        # table grows with rows, bottom follows directly.
+        # Dynamic layout: table grows with rows, bottom follows (no big whitespace)
         # -------------------------
         top_h = TOP_POSTERS_H
         header1_h = HEADER1_H_PX
@@ -326,7 +337,6 @@ class AfficheRenderer:
         ty = table_y0 + (header1_h - self.font_header.size) / 2
         draw.text((tx, ty), hdr, fill=(255, 255, 255), font=self.font_header)
 
-        # helper functions
         def cell_outline(x0, y0, x1, y1):
             draw.rectangle([x0, y0, x1, y1], outline=(210, 210, 210), width=1)
 
@@ -348,16 +358,13 @@ class AfficheRenderer:
 
         x = table_x0
         box = (x, y_hdr2, x + film_w, y_hdr2 + header2_h)
-        cell_outline(*box); draw_center_text(box, "FILM", self.font_colhdr)
-        x += film_w
+        cell_outline(*box); draw_center_text(box, "FILM", self.font_colhdr); x += film_w
 
         box = (x, y_hdr2, x + versie_w, y_hdr2 + header2_h)
-        cell_outline(*box); draw_center_text(box, "VERSIE", self.font_colhdr)
-        x += versie_w
+        cell_outline(*box); draw_center_text(box, "VERSIE", self.font_colhdr); x += versie_w
 
         box = (x, y_hdr2, x + good_w, y_hdr2 + header2_h)
-        cell_outline(*box); draw_center_text(box, "GOED\nGEZIEN", self.font_colhdr)
-        x += good_w
+        cell_outline(*box); draw_center_text(box, "GOED\nGEZIEN", self.font_colhdr); x += good_w
 
         dates = two_week_dates_from_start(start_date)
         for i in range(14):
@@ -378,19 +385,16 @@ class AfficheRenderer:
             film = state.films[r]
             x = table_x0
 
-            # film cell
             cell_outline(x, ry0, x + film_w, ry1)
             draw_center_text((x, ry0, x + film_w, ry1), film.name, self.font_cell)
             x += film_w
 
-            # version cell
             cell_outline(x, ry0, x + versie_w, ry1)
             vtxt = film.version + (" 3D" if film.is_3d else "")
             vcol = (200, 0, 0) if film.is_3d else (0, 0, 0)
             draw_center_text((x, ry0, x + versie_w, ry1), vtxt, self.font_cell, fill=vcol)
             x += versie_w
 
-            # good icons cell
             cell_outline(x, ry0, x + good_w, ry1)
             if film.good_icons:
                 icon_size = max(18, min(24, row_h - 8))
@@ -403,7 +407,6 @@ class AfficheRenderer:
                         ix += icon_size + 4
             x += good_w
 
-            # 14 day cells
             for i in range(14):
                 w = day_widths[i]
                 cell_outline(x, ry0, x + w, ry1)
@@ -413,36 +416,72 @@ class AfficheRenderer:
                 x += w
 
         # -------------------------
-        # Bottom posters (2x5) — follow table directly
+        # Bottom posters grid (dynamic):
+        # - if N<=5 => 1 row with N columns
+        # - else => row1=5, row2=N-5 (columns fill full width)
+        # Uses smart-fit to minimize visible empty space while keeping proportion
         # -------------------------
         if bottom_h > 0:
-            slot_h = bottom_h // 2
-            col_widths = self._split_width(A4_W_PX, 5)  # fixed widths for both rows
             draw.rectangle([0, bottom_y0, A4_W_PX, A4_H_PX], fill=(240, 240, 240))
 
-            posters_to_show = min(MAX_BOTTOM, film_rows)  # match films count
-
-            for j in range(MAX_BOTTOM):
-                row = j // 5
-                col = j % 5
-                x0 = sum(col_widths[:col])
-                w = col_widths[col]
-                y0b = bottom_y0 + row * slot_h
-                h = slot_h
-
-                if j < posters_to_show:
+            if posters_to_show <= 5:
+                # single row
+                slot_h = bottom_h
+                cols = posters_to_show
+                col_widths = self._split_width(A4_W_PX, max(1, cols))
+                for j in range(posters_to_show):
+                    x0 = sum(col_widths[:j])
+                    w = col_widths[j]
+                    y0b = bottom_y0
+                    h = slot_h
                     p = state.posters.bottom[j]
                     if p and os.path.isfile(p):
                         try:
                             img = Image.open(p).convert("RGB")
-                            # city-ready: contain with blurred background
-                            page.paste(self._draw_contain_with_blur_bg(img, w, h), (x0, y0b))
+                            page.paste(self._draw_smart_fit(img, w, h), (x0, y0b))
                         except Exception:
                             draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(220, 220, 220))
                     else:
                         draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(240, 240, 240))
-                else:
-                    draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(240, 240, 240))
+            else:
+                # two rows: 5 + (N-5)
+                slot_h = bottom_h // 2
+
+                # Row 1: always 5
+                col_widths_r1 = self._split_width(A4_W_PX, 5)
+                for j in range(5):
+                    x0 = sum(col_widths_r1[:j])
+                    w = col_widths_r1[j]
+                    y0b = bottom_y0
+                    h = slot_h
+                    p = state.posters.bottom[j]
+                    if p and os.path.isfile(p):
+                        try:
+                            img = Image.open(p).convert("RGB")
+                            page.paste(self._draw_smart_fit(img, w, h), (x0, y0b))
+                        except Exception:
+                            draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(220, 220, 220))
+                    else:
+                        draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(240, 240, 240))
+
+                # Row 2: remaining
+                remaining = posters_to_show - 5
+                col_widths_r2 = self._split_width(A4_W_PX, remaining)
+                for k in range(remaining):
+                    idx = 5 + k
+                    x0 = sum(col_widths_r2[:k])
+                    w = col_widths_r2[k]
+                    y0b = bottom_y0 + slot_h
+                    h = bottom_h - slot_h  # remainder pixels go here
+                    p = state.posters.bottom[idx]
+                    if p and os.path.isfile(p):
+                        try:
+                            img = Image.open(p).convert("RGB")
+                            page.paste(self._draw_smart_fit(img, w, h), (x0, y0b))
+                        except Exception:
+                            draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(220, 220, 220))
+                    else:
+                        draw.rectangle([x0, y0b, x0 + w, y0b + h], fill=(240, 240, 240))
 
         return page
 
@@ -483,10 +522,15 @@ class App(tk.Tk):
         self.is_loading_row = False
         self.last_header_date: Optional[str] = None
 
+        # poster button refs
+        self.bottom_btn_frame = None
+        self.bottom_buttons: List[ttk.Button] = []
+
         self._build_ui()
         self._refresh_film_list()
         self.film_list.selection_set(0)
         self._load_row_into_editor(0)
+        self._rebuild_bottom_buttons()
         self._schedule_preview()
 
     def _scan_icons(self) -> List[str]:
@@ -547,12 +591,9 @@ class App(tk.Tk):
         for i in range(MAX_TOP):
             ttk.Button(top_row, text=f"Top {i+1}", command=lambda k=i: self.import_poster("top", k)).pack(side="left", padx=2)
 
-        bot_row = ttk.Frame(posters_frame)
-        bot_row.pack(fill="x", pady=(6, 0))
-        ttk.Label(bot_row, text="Bottom:").pack(side="left", padx=(0, 8))
-        for i in range(MAX_BOTTOM):
-            label = f"R1-{i+1}" if i < 5 else f"R2-{i-4}"
-            ttk.Button(bot_row, text=label, command=lambda k=i: self.import_poster("bottom", k)).pack(side="left", padx=2)
+        # bottom buttons frame (rebuilt dynamically)
+        self.bottom_btn_frame = ttk.Frame(posters_frame)
+        self.bottom_btn_frame.pack(fill="x", pady=(6, 0))
 
         mid = ttk.Panedwindow(left, orient="horizontal")
         mid.pack(fill="both", expand=True)
@@ -641,7 +682,6 @@ class App(tk.Tk):
             cv.trace_add("write", lambda *_: self._schedule_preview())
 
     def _build_schedule_widgets_once(self):
-        # compact editor
         for i in range(14):
             lbl = ttk.Label(self.sched_inner, text="", justify="center")
             lbl.grid(row=0, column=i, padx=3, pady=2)
@@ -650,7 +690,6 @@ class App(tk.Tk):
             e = ttk.Entry(self.sched_inner, textvariable=self.cell_vars[i], width=7)
             e.grid(row=1, column=i, padx=3, pady=2)
 
-            # macOS: single click focus
             def _entry_click(ev, w=e):
                 w.focus_set()
                 w.selection_range(0, tk.END)
@@ -684,6 +723,47 @@ class App(tk.Tk):
             v = f.version + (" 3D" if f.is_3d else "")
             self.film_list.insert(tk.END, f"{i+1:02d}. {f.name} [{v}]")
 
+    def _rebuild_bottom_buttons(self):
+        # Remove old
+        for b in self.bottom_buttons:
+            b.destroy()
+        self.bottom_buttons.clear()
+
+        n = min(MAX_BOTTOM, len(self.state_obj.films))
+        if n <= 0:
+            return
+
+        # Build layout:
+        # <=5 => 1 row
+        # >5 => row1=5, row2=n-5
+        for child in self.bottom_btn_frame.winfo_children():
+            child.destroy()
+
+        ttk.Label(self.bottom_btn_frame, text="Bottom:").pack(side="left", padx=(0, 8))
+
+        if n <= 5:
+            for i in range(n):
+                btn = ttk.Button(self.bottom_btn_frame, text=f"{i+1}", command=lambda k=i: self.import_poster("bottom", k))
+                btn.pack(side="left", padx=2)
+                self.bottom_buttons.append(btn)
+        else:
+            # two rows of buttons for clarity
+            rowA = ttk.Frame(self.bottom_btn_frame)
+            rowB = ttk.Frame(self.bottom_btn_frame)
+            rowA.pack(fill="x")
+            rowB.pack(fill="x", pady=(4, 0))
+
+            for i in range(5):
+                btn = ttk.Button(rowA, text=f"R1-{i+1}", command=lambda k=i: self.import_poster("bottom", k))
+                btn.pack(side="left", padx=2)
+                self.bottom_buttons.append(btn)
+
+            for j in range(n - 5):
+                idx = 5 + j
+                btn = ttk.Button(rowB, text=f"R2-{j+1}", command=lambda k=idx: self.import_poster("bottom", k))
+                btn.pack(side="left", padx=2)
+                self.bottom_buttons.append(btn)
+
     def _save_editor_into_row(self, idx: int):
         if idx < 0 or idx >= len(self.state_obj.films):
             return
@@ -698,16 +778,13 @@ class App(tk.Tk):
         if idx < 0 or idx >= len(self.state_obj.films):
             return
         f = self.state_obj.films[idx]
-
         self.is_loading_row = True
         try:
             self.name_var.set(f.name)
             self.version_var.set(f.version)
             self.is3d_var.set(f.is_3d)
-
             for fn, var in self.icon_vars.items():
                 var.set(fn in f.good_icons)
-
             for i in range(14):
                 self.cell_vars[i].set(f.cells[i] if i < len(f.cells) else "")
         finally:
@@ -741,6 +818,7 @@ class App(tk.Tk):
         self._save_editor_into_row(self.current_row_index)
         self.state_obj.films.append(FilmRow())
         self._refresh_film_list()
+        self._rebuild_bottom_buttons()
 
         new_idx = len(self.state_obj.films) - 1
         self.film_list.selection_clear(0, tk.END)
@@ -762,6 +840,7 @@ class App(tk.Tk):
 
         new_idx = max(0, idx - 1)
         self._refresh_film_list()
+        self._rebuild_bottom_buttons()
 
         self.film_list.selection_clear(0, tk.END)
         self.film_list.selection_set(new_idx)
@@ -772,6 +851,12 @@ class App(tk.Tk):
         self._schedule_preview()
 
     def import_poster(self, where: str, index: int):
+        # Only allow indices needed by film count
+        if where == "bottom":
+            n = min(MAX_BOTTOM, len(self.state_obj.films))
+            if index < 0 or index >= n:
+                return
+
         path = filedialog.askopenfilename(
             title="Kies poster",
             filetypes=[("Images", "*.jpg *.jpeg *.png *.webp"), ("All", "*.*")]
