@@ -79,6 +79,10 @@ CELL_TEXT_Y_BIAS = -1
 
 RED_3D = (200, 0, 0)
 
+# Footer under the table (over full width)
+FOOTER_H_PX = 56
+FOOTER_TEXT = "UREN IN HET ROOD = 3D  *  NV = NEDERLANDSE VERSIE  *  OV = ORIGINELE VERSIE"
+
 DUTCH_MONTHS = {
     1: "Jan.", 2: "Feb.", 3: "Mrt.", 4: "Apr.", 5: "Mei", 6: "Jun.",
     7: "Jul.", 8: "Aug.", 9: "Sep.", 10: "Okt.", 11: "Nov.", 12: "Dec."
@@ -175,6 +179,10 @@ class FilmRow:
     version: str = "OV"
     is_3d: bool = False
     good_icons: List[str] = field(default_factory=list)
+
+    # NEW: per-row image that appears above the title in the FILM cell
+    title_image: str = ""
+
     cells: List[str] = field(default_factory=lambda: [""] * 14)
 
 
@@ -248,10 +256,23 @@ class MySQLStore:
     """
     Tables:
       affiches(start_date DATE PRIMARY KEY, state_json LONGTEXT, updated_at TIMESTAMP)
-      affiche_images(start_date DATE, slot_type ENUM('top','bottom'), slot_index INT,
-                    filename VARCHAR(255), mime VARCHAR(80), data LONGBLOB,
-                    PRIMARY KEY(start_date, slot_type, slot_index))
+      affiche_images(
+          start_date DATE,
+          slot_type ENUM('top','bottom','title'),
+          slot_index INT,
+          filename VARCHAR(255),
+          mime VARCHAR(80),
+          data LONGBLOB,
+          PRIMARY KEY(start_date, slot_type, slot_index),
+          FOREIGN KEY (start_date) REFERENCES affiches(start_date) ON DELETE CASCADE
+      )
+
+    slot_type:
+      - 'top'    : top posters (slot_index 0..4)
+      - 'bottom' : bottom posters (slot_index 0..9)
+      - 'title'  : per film-row title image (slot_index = row index 0..N-1)
     """
+
     def __init__(self, cfg: Dict[str, str]):
         self.cfg = cfg
 
@@ -274,7 +295,7 @@ class MySQLStore:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS affiche_images (
                     start_date DATE NOT NULL,
-                    slot_type ENUM('top','bottom') NOT NULL,
+                    slot_type ENUM('top','bottom','title') NOT NULL,
                     slot_index INT NOT NULL,
                     filename VARCHAR(255),
                     mime VARCHAR(80),
@@ -286,6 +307,17 @@ class MySQLStore:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
             cn.commit()
+
+            # Migration for older installs: slot_type was only ('top','bottom')
+            try:
+                cur.execute("""
+                    ALTER TABLE affiche_images
+                    MODIFY slot_type ENUM('top','bottom','title') NOT NULL;
+                """)
+                cn.commit()
+            except Exception:
+                # If already correct or ALTER not allowed, ignore
+                cn.rollback()
         finally:
             cn.close()
 
@@ -305,8 +337,14 @@ class MySQLStore:
             data = f.read()
         return data, fn, mime
 
-    def save_affiche(self, start_date: dt.date, state_json: str,
-                     top_paths: List[str], bottom_paths: List[str]) -> None:
+    def save_affiche(
+        self,
+        start_date: dt.date,
+        state_json: str,
+        top_paths: List[str],
+        bottom_paths: List[str],
+        title_paths: List[str],
+    ) -> None:
         cn = self.connect()
         try:
             cn.start_transaction()
@@ -340,6 +378,18 @@ class MySQLStore:
                 cur.execute("""
                     INSERT INTO affiche_images (start_date, slot_type, slot_index, filename, mime, data)
                     VALUES (%s, 'bottom', %s, %s, %s, %s);
+                """, (start_date, idx, fn, mime, data))
+
+            # title images per film-row
+            for idx, p in enumerate(title_paths):
+                if not p:
+                    continue
+                if not os.path.isfile(p):
+                    continue
+                data, fn, mime = self._read_file_bytes(p)
+                cur.execute("""
+                    INSERT INTO affiche_images (start_date, slot_type, slot_index, filename, mime, data)
+                    VALUES (%s, 'title', %s, %s, %s, %s);
                 """, (start_date, idx, fn, mime, data))
 
             cn.commit()
@@ -541,15 +591,20 @@ class AfficheRenderer:
         header2_h = HEADER2_H_PX
 
         bottom_h_target = int(top_h * BOTTOM_TARGET_MULT)
-        min_table_h = header1_h + header2_h + film_rows * ROW_H_MIN
+
+        min_table_h = header1_h + header2_h + FOOTER_H_PX + film_rows * ROW_H_MIN
         max_bottom_allowed = A4_H_PX - top_h - min_table_h
         bottom_h = BOTTOM_MIN_OK if max_bottom_allowed < BOTTOM_MIN_OK else max(BOTTOM_MIN_OK, min(bottom_h_target, max_bottom_allowed))
 
         available_for_table = A4_H_PX - top_h - bottom_h
-        row_h = min(ROW_H_TARGET, max(ROW_H_MIN, (available_for_table - header1_h - header2_h) // film_rows))
+
+        row_h = min(
+            ROW_H_TARGET,
+            max(ROW_H_MIN, (available_for_table - header1_h - header2_h - FOOTER_H_PX) // film_rows)
+        )
 
         table_y0 = top_h
-        table_h = header1_h + header2_h + film_rows * row_h
+        table_h = header1_h + header2_h + film_rows * row_h + FOOTER_H_PX
         table_y1 = table_y0 + table_h
 
         bottom_y0 = table_y1
@@ -618,7 +673,7 @@ class AfficheRenderer:
 
         x = table_x0
         cell_outline(x, y_hdr2, x + film_w, y_hdr2 + header2_h)
-        draw_center_text((x, y_hdr2, x + film_w, y_hdr2 + header2_h), "FILM", self.font_colhdr, y_bias=HEADER_TEXT_Y_BIAS)
+        draw_center_text((x, y_hdr2, x + film_w, y_hdr2 + header2_h), "🎥FILM", self.font_colhdr, y_bias=HEADER_TEXT_Y_BIAS)
         x += film_w
 
         cell_outline(x, y_hdr2, x + duur_w, y_hdr2 + header2_h)
@@ -641,6 +696,7 @@ class AfficheRenderer:
             x += w
 
         rows_y0 = table_y0 + header1_h + header2_h
+
         for r in range(film_rows):
             ry0 = rows_y0 + r * row_h
             ry1 = ry0 + row_h
@@ -652,19 +708,42 @@ class AfficheRenderer:
 
             x = table_x0
 
+            # FILM cell: title image on top, text below
+            # FILM cell: if title_image exists -> FULL cell image, and hide typed title.
             cell_outline(x, ry0, x + film_w, ry1)
-            draw_center_text((x, ry0, x + film_w, ry1), film.name, self.font_cell, fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
+
+            img_path = (getattr(film, "title_image", "") or "").strip()
+            has_img = bool(img_path and os.path.isfile(img_path))
+
+            if has_img:
+                try:
+                    poster_like = Image.open(img_path)
+                    # FULL CELL FILL (cover): image fills entire FILM cell; may crop edges (poster-like)
+                    full_img = self._draw_cover(poster_like, film_w, row_h)
+                    page.paste(full_img, (x, ry0))
+                except Exception:
+                    # fallback: if image fails, show text
+                    draw_center_text((x, ry0, x + film_w, ry1), film.name, self.font_cell,
+                                    fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
+            else:
+                # no image => show typed title
+                draw_center_text((x, ry0, x + film_w, ry1), film.name, self.font_cell,
+                                fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
+
             x += film_w
 
+            # DUUR
             cell_outline(x, ry0, x + duur_w, ry1)
             draw_center_text((x, ry0, x + duur_w, ry1), film.duration, self.font_cell, fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
             x += duur_w
 
+            # VERSIE
             cell_outline(x, ry0, x + versie_w, ry1)
             vtxt = film.version + (" 3D" if film.is_3d else "")
             draw_center_text((x, ry0, x + versie_w, ry1), vtxt, self.font_cell, fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
             x += versie_w
 
+            # GOED GEZIEN icons
             cell_outline(x, ry0, x + good_w, ry1)
             if film.good_icons:
                 icon_size = max(20, min(30, row_h - 14))
@@ -677,6 +756,7 @@ class AfficheRenderer:
                         ix += icon_size + 4
             x += good_w
 
+            # 14 day cells
             for i in range(14):
                 w = day_widths[i]
                 cell_outline(x, ry0, x + w, ry1)
@@ -684,6 +764,13 @@ class AfficheRenderer:
                 if t:
                     draw_center_text((x, ry0, x + w, ry1), t, self.font_cell, fill=txt_color, y_bias=CELL_TEXT_Y_BIAS)
                 x += w
+
+        # Footer row (full width under rows)
+        footer_y0 = rows_y0 + film_rows * row_h
+        footer_y1 = footer_y0 + FOOTER_H_PX
+        draw.rectangle([table_x0, footer_y0, table_x1, footer_y1], fill=(255, 255, 255))
+        draw.line([table_x0, footer_y0, table_x1, footer_y0], fill=(210, 210, 210), width=2)
+        draw_center_text((table_x0, footer_y0, table_x1, footer_y1), FOOTER_TEXT, self.font_colhdr_small, fill=(0, 0, 0), y_bias=0)
 
         # BOTTOM posters: always full poster visible
         if bottom_h > 0:
@@ -761,6 +848,9 @@ class App(tk.Tk):
         self.bottom_btn_frame = None
         self.top_buttons: List[ttk.Button] = []
         self.bottom_buttons: List[ttk.Button] = []
+
+        # NEW: show selected title image filename (basename) in UI
+        self.title_image_var = tk.StringVar(value="")
 
         # DB store
         self.db_store: Optional[MySQLStore] = None
@@ -845,8 +935,8 @@ class App(tk.Tk):
         db_bar = ttk.Frame(left)
         db_bar.pack(fill="x", pady=(0, 8))
 
-        self.btn_db_save = ttk.Button(db_bar, text="💾 Opslaan in MySQL", command=self.save_to_mysql)
-        self.btn_db_load = ttk.Button(db_bar, text="📂 Open uit MySQL", command=self.load_from_mysql)
+        self.btn_db_save = ttk.Button(db_bar, text="💾 Opslaan in Database", command=self.save_to_mysql)
+        self.btn_db_load = ttk.Button(db_bar, text="📂 Open uit Database", command=self.load_from_mysql)
         self.btn_db_save.pack(side="left")
         self.btn_db_load.pack(side="left", padx=8)
 
@@ -889,6 +979,12 @@ class App(tk.Tk):
 
         self.name_var = tk.StringVar()
         ttk.Entry(name_dur, textvariable=self.name_var, width=40).pack(anchor="w")
+
+        # NEW: Title image (per row)
+        titleimg_row = ttk.Frame(name_dur)
+        titleimg_row.pack(anchor="w", pady=(4, 0), fill="x")
+        ttk.Button(titleimg_row, text="Titelafbeelding…", command=self.import_title_image).pack(side="left")
+        ttk.Label(titleimg_row, textvariable=self.title_image_var).pack(side="left", padx=8)
 
         dur_row = ttk.Frame(name_dur)
         dur_row.pack(anchor="w", pady=(4, 0))
@@ -956,10 +1052,11 @@ class App(tk.Tk):
         self.is3d_var.trace_add("write", lambda *_: self._schedule_preview())
         for cv in self.cell_vars:
             cv.trace_add("write", lambda *_: self._schedule_preview())
+
         # cleanup bij afsluiten
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # (optioneel maar aanbevolen) cleanup bij start zodat oude blobs niet blijven liggen
+        # cleanup bij start zodat oude blobs niet blijven liggen
         self._cleanup_tmp_db_images()
 
     def _build_schedule_widgets_once(self):
@@ -1007,7 +1104,8 @@ class App(tk.Tk):
             v = f.version + (" 3D" if f.is_3d else "")
             dur = f.duration.strip()
             dur_show = f" {dur}" if dur else ""
-            self.film_list.insert(tk.END, f"{i+1:02d}. {f.name}{dur_show} [{v}]")
+            ti = " +IMG" if (getattr(f, "title_image", "").strip()) else ""
+            self.film_list.insert(tk.END, f"{i+1:02d}. {f.name}{dur_show} [{v}]{ti}")
 
     def _rebuild_poster_buttons(self):
         film_rows = max(1, len(self.state_obj.films))
@@ -1056,6 +1154,7 @@ class App(tk.Tk):
         f.is_3d = bool(self.is3d_var.get())
         f.good_icons = [fn for fn, var in self.icon_vars.items() if var.get()]
         f.cells = [cv.get() for cv in self.cell_vars]
+        # title_image is set via import_title_image() and restored via load_from_mysql()
 
     def _load_row_into_editor(self, idx: int):
         if idx < 0 or idx >= len(self.state_obj.films):
@@ -1070,6 +1169,10 @@ class App(tk.Tk):
             self.duration_var.set(getattr(f, "duration", ""))
             self.version_var.set(f.version)
             self.is3d_var.set(f.is_3d)
+
+            # NEW: show basename of title image
+            base = os.path.basename(getattr(f, "title_image", "") or "")
+            self.title_image_var.set(base)
 
             for fn, var in self.icon_vars.items():
                 var.set(fn in f.good_icons)
@@ -1158,6 +1261,23 @@ class App(tk.Tk):
             self.state_obj.posters.bottom[index] = path
         self._schedule_preview()
 
+    # NEW: per-row title image picker
+    def import_title_image(self):
+        path = filedialog.askopenfilename(
+            title="Kies titelafbeelding (per filmrij)",
+            filetypes=[("Images", "*.jpg *.jpeg *.png *.webp"), ("All", "*.*")]
+        )
+        if not path:
+            return
+
+        idx = self.current_row_index
+        if 0 <= idx < len(self.state_obj.films):
+            self.state_obj.films[idx].title_image = path
+            self.title_image_var.set(os.path.basename(path))
+
+        self._refresh_film_list()
+        self._schedule_preview()
+
     def _schedule_preview(self):
         if self.is_loading_row:
             return
@@ -1207,7 +1327,7 @@ class App(tk.Tk):
     def _serialize_state_json(self) -> str:
         """
         Serialize state WITHOUT image bytes; image bytes are stored separately.
-        We store only poster slot markers (filename placeholders) so the GUI still shows 'has image'.
+        We store only poster + title-image markers (filenames) in JSON so GUI can show 'has image'.
         """
         self._save_editor_into_row(self.current_row_index)
         try:
@@ -1217,7 +1337,14 @@ class App(tk.Tk):
 
         obj = {
             "start_date": self.state_obj.start_date,
-            "films": [asdict(f) for f in self.state_obj.films],
+            "films": [
+                {
+                    **asdict(f),
+                    # store only basename marker in JSON (blob is separate)
+                    "title_image": os.path.basename(f.title_image) if f.title_image else ""
+                }
+                for f in self.state_obj.films
+            ],
             "posters": {
                 "top": [os.path.basename(p) if p else "" for p in self.state_obj.posters.top],
                 "bottom": [os.path.basename(p) if p else "" for p in self.state_obj.posters.bottom],
@@ -1246,8 +1373,14 @@ class App(tk.Tk):
         top_paths = (self.state_obj.posters.top[:top_cols] + [""] * MAX_TOP)[:MAX_TOP]
         bottom_paths = (self.state_obj.posters.bottom[:(bottom_cols * 2)] + [""] * MAX_BOTTOM)[:MAX_BOTTOM]
 
+        # NEW: title images (one per film row, stored as 'title' slot_type, slot_index=row_index)
+        title_paths = []
+        for f in self.state_obj.films:
+            p = (getattr(f, "title_image", "") or "").strip()
+            title_paths.append(p if (p and os.path.isfile(p)) else "")
+
         try:
-            self.db_store.save_affiche(d, state_json, top_paths, bottom_paths)
+            self.db_store.save_affiche(d, state_json, top_paths, bottom_paths, title_paths)
             messagebox.showinfo("MySQL", f"Affiche opgeslagen voor {d.isoformat()}.")
         except Exception as e:
             logging.exception(f"MySQL save failed: {e}")
@@ -1292,12 +1425,14 @@ class App(tk.Tk):
                 cells = fobj.get("cells", [""] * 14)
                 if len(cells) < 14:
                     cells = (cells + [""] * 14)[:14]
+
                 films.append(FilmRow(
                     name=fobj.get("name", "NAAM"),
                     duration=fobj.get("duration", ""),
                     version=fobj.get("version", "OV"),
                     is_3d=bool(fobj.get("is_3d", False)),
                     good_icons=list(fobj.get("good_icons", [])),
+                    title_image="",  # will be filled from blob restore below if present
                     cells=list(cells),
                 ))
             if not films:
@@ -1305,7 +1440,7 @@ class App(tk.Tk):
 
             self.state_obj.films = films
 
-            # Restore images to temp files + assign paths
+            # Restore posters to temp files + assign paths
             self.state_obj.posters.top = [""] * MAX_TOP
             self.state_obj.posters.bottom = [""] * MAX_BOTTOM
 
@@ -1313,10 +1448,17 @@ class App(tk.Tk):
                 if not blob:
                     continue
                 path = safe_write_blob_to_tmp(d.isoformat(), slot_type, idx, fn, blob)
+
                 if slot_type == "top" and 0 <= idx < MAX_TOP:
                     self.state_obj.posters.top[idx] = path
-                if slot_type == "bottom" and 0 <= idx < MAX_BOTTOM:
+
+                elif slot_type == "bottom" and 0 <= idx < MAX_BOTTOM:
                     self.state_obj.posters.bottom[idx] = path
+
+                elif slot_type == "title":
+                    # slot_index is row index
+                    if 0 <= idx < len(self.state_obj.films):
+                        self.state_obj.films[idx].title_image = path
 
         finally:
             self.is_loading_row = False
@@ -1330,6 +1472,7 @@ class App(tk.Tk):
         self._load_row_into_editor(0)
         self._schedule_preview()
         messagebox.showinfo("MySQL", f"Affiche geladen voor {d.isoformat()}.")
+
     def _cleanup_tmp_db_images(self):
         """Verwijdert alle bestanden in tmp_db_images (cache)."""
         try:
@@ -1350,6 +1493,7 @@ class App(tk.Tk):
             self._cleanup_tmp_db_images()
         finally:
             self.destroy()
+
 
 # -----------------------------
 # Main
