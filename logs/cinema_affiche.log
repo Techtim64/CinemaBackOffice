@@ -880,3 +880,4 @@ PIL.UnidentifiedImageError: cannot identify image file '/Users/timcaudron/Cinema
 2026-02-21 11:55:31,913 [ERROR] SVG icon requires cairosvg. Install: pip install cairosvg
 2026-02-21 11:55:31,913 [ERROR] SVG icon requires cairosvg. Install: pip install cairosvg
 2026-02-21 11:55:31,913 [ERROR] SVG icon requires cairosvg. Install: pip install cairosvg
+2026-02-21 12:11:19,571 [INFO] Found 12 icons in /Users/timcaudron/CinemaBackOffice/icons
