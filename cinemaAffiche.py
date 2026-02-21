@@ -956,6 +956,11 @@ class App(tk.Tk):
         self.is3d_var.trace_add("write", lambda *_: self._schedule_preview())
         for cv in self.cell_vars:
             cv.trace_add("write", lambda *_: self._schedule_preview())
+        # cleanup bij afsluiten
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # (optioneel maar aanbevolen) cleanup bij start zodat oude blobs niet blijven liggen
+        self._cleanup_tmp_db_images()
 
     def _build_schedule_widgets_once(self):
         for i in range(14):
@@ -1325,6 +1330,26 @@ class App(tk.Tk):
         self._load_row_into_editor(0)
         self._schedule_preview()
         messagebox.showinfo("MySQL", f"Affiche geladen voor {d.isoformat()}.")
+    def _cleanup_tmp_db_images(self):
+        """Verwijdert alle bestanden in tmp_db_images (cache)."""
+        try:
+            if not TMP_DIR.exists():
+                return
+            for p in TMP_DIR.iterdir():
+                if p.is_file():
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _on_close(self):
+        """Wordt getriggerd als je het venster sluit."""
+        try:
+            self._cleanup_tmp_db_images()
+        finally:
+            self.destroy()
 
 # -----------------------------
 # Main
