@@ -4,12 +4,14 @@ from PyInstaller.utils.hooks import collect_submodules
 
 BASE_DIR = SPECPATH
 
+
 def add_file(rel_path, dest_dir):
     src = os.path.join(BASE_DIR, rel_path)
     if os.path.isfile(src):
         DATAS.append((src, dest_dir))
     else:
         print(f"[WARN] missing file: {src}")
+
 
 def add_folder(rel_folder):
     folder = os.path.join(BASE_DIR, rel_folder)
@@ -19,14 +21,19 @@ def add_folder(rel_folder):
     for root, _dirs, files in os.walk(folder):
         for fn in files:
             src = os.path.join(root, fn)
-            dest = os.path.relpath(root, BASE_DIR)  # icons/ui, fonts, ...
+            dest = os.path.relpath(root, BASE_DIR)  # bv icons/ui, fonts, ...
             DATAS.append((src, dest))
+
 
 hiddenimports = ['mysql.connector.plugins.caching_sha2_password']
 hiddenimports += collect_submodules('mysql.connector.plugins')
 
+# ✅ Zorg dat deze modules zeker mee in de build zitten (ook al wordt import soms “gemist”)
+hiddenimports += ['cinema_affiche', 'cinema_borderel']
+
 DATAS = []
 add_file("assets/logo.png", "assets")
+add_file("assets/CinemaCentral.ico", "assets")   # ✅ ico mee in dist
 add_folder("icons")
 add_folder("fonts")
 
