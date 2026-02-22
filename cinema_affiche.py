@@ -20,6 +20,49 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 
 # -----------------------------
+# Windows DPI scaling (fix small fonts)
+# -----------------------------
+def _enable_windows_dpi_awareness():
+    """
+    Make Tk/PIL sizing behave correctly on Windows high-DPI displays.
+    Safe no-op on macOS/Linux.
+    """
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes
+            try:
+                # Windows 10+ per-monitor DPI aware
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            except Exception:
+                # Fallback (older)
+                ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+def _get_scale_factor(root: tk.Misc) -> float:
+    """
+    Returns a scale factor relative to 96 DPI.
+    Uses Tk's pixel density.
+    """
+    try:
+        ppi = float(root.winfo_fpixels("1i"))  # pixels per inch
+        return max(1.0, ppi / 96.0)
+    except Exception:
+        return 1.0
+
+
+def _apply_tk_scaling(root: tk.Misc, scale: float):
+    """
+    Scale Tk widget sizes and default fonts.
+    """
+    try:
+        root.tk.call("tk", "scaling", scale)
+    except Exception:
+        pass
+
+
+# -----------------------------
 # Optional MySQL connector
 # -----------------------------
 # Install: pip install mysql-connector-python
@@ -58,7 +101,6 @@ FONTS_DIR = resource_path("fonts")
 APPDATA_DIR = Path.home() / ".cinema_backoffice"
 LOGS_DIR = APPDATA_DIR / "logs"
 TMP_DIR = APPDATA_DIR / "tmp_db_images"
-
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -97,6 +139,13 @@ RED_3D = (200, 0, 0)
 # Footer under the table (full width)
 FOOTER_H_PX = 56
 FOOTER_TEXT = "UREN IN HET ROOD = 3D  *  NV = NEDERLANDSE VERSIE  *  OV = ORIGINELE VERSIE"
+
+# Base sizes (used for scaling)
+BASE_HEADER1_H_PX = HEADER1_H_PX
+BASE_HEADER2_H_PX = HEADER2_H_PX
+BASE_ROW_H_TARGET = ROW_H_TARGET
+BASE_ROW_H_MIN = ROW_H_MIN
+BASE_FOOTER_H_PX = FOOTER_H_PX
 
 DUTCH_MONTHS = {
     1: "Jan.", 2: "Feb.", 3: "Mrt.", 4: "Apr.", 5: "Mei", 6: "Jun.",
@@ -394,14 +443,18 @@ def safe_write_blob_to_tmp(start_date: str, slot_type: str, idx: int, filename: 
 # Renderer
 # -----------------------------
 class AfficheRenderer:
-    def __init__(self, icons_dir: Path):
+    def __init__(self, icons_dir: Path, ui_scale: float = 1.0):
         self.icons_dir = icons_dir
         self.ui_icons_dir = icons_dir / "ui"
+        self.ui_scale = float(ui_scale) if ui_scale else 1.0
 
-        self.font_header = load_modern_font(52)
-        self.font_colhdr = load_modern_font(30)
-        self.font_colhdr_small = load_modern_font(26)
-        self.font_cell = load_modern_font(28)
+        def S(x: int) -> int:
+            return max(1, int(round(x * self.ui_scale)))
+
+        self.font_header = load_modern_font(S(52))
+        self.font_colhdr = load_modern_font(S(30))
+        self.font_colhdr_small = load_modern_font(S(26))
+        self.font_cell = load_modern_font(S(28))
 
         self._icons_cache: Dict[str, Image.Image] = {}
 
@@ -491,7 +544,7 @@ class AfficheRenderer:
         dst_rgb.paste(tmp.convert("RGB"))
 
     def _load_icon(self, filename: str, size_px: int) -> Optional[Image.Image]:
-        """Goed gezien icons: ONLY raster (png/jpg/webp)."""
+        """Goed gezien icons: PNG/JPG/WEBP only."""
         if not filename:
             return None
         key = f"{filename}|{size_px}"
@@ -511,7 +564,7 @@ class AfficheRenderer:
             return None
 
     def _load_ui_icon(self, filename: str, size_px: int) -> Optional[Image.Image]:
-        """UI icons: ONLY raster (png/jpg/webp)."""
+        """UI icons: PNG/JPG/WEBP only."""
         if not filename:
             return None
         key = f"UI::{filename}|{size_px}"
@@ -539,12 +592,20 @@ class AfficheRenderer:
         bottom_cols = bottom_cols_for_rows(film_rows)
 
         top_h = TOP_POSTERS_H
-        header1_h = HEADER1_H_PX
-        header2_h = HEADER2_H_PX
+
+        S = lambda v: max(1, int(round(v * self.ui_scale)))
+
+        header1_h = S(BASE_HEADER1_H_PX)
+        header2_h = S(BASE_HEADER2_H_PX)
+
+        row_h_target = S(BASE_ROW_H_TARGET)
+        row_h_min = S(BASE_ROW_H_MIN)
+
+        footer_h = S(BASE_FOOTER_H_PX)
 
         bottom_h_target = int(top_h * BOTTOM_TARGET_MULT)
 
-        min_table_h = header1_h + header2_h + FOOTER_H_PX + film_rows * ROW_H_MIN
+        min_table_h = header1_h + header2_h + footer_h + film_rows * row_h_min
         max_bottom_allowed = A4_H_PX - top_h - min_table_h
         bottom_h = BOTTOM_MIN_OK if max_bottom_allowed < BOTTOM_MIN_OK else max(
             BOTTOM_MIN_OK, min(bottom_h_target, max_bottom_allowed)
@@ -552,12 +613,12 @@ class AfficheRenderer:
 
         available_for_table = A4_H_PX - top_h - bottom_h
         row_h = min(
-            ROW_H_TARGET,
-            max(ROW_H_MIN, (available_for_table - header1_h - header2_h - FOOTER_H_PX) // film_rows)
+            row_h_target,
+            max(row_h_min, (available_for_table - header1_h - header2_h - footer_h) // film_rows)
         )
 
         table_y0 = top_h
-        table_h = header1_h + header2_h + film_rows * row_h + FOOTER_H_PX
+        table_h = header1_h + header2_h + film_rows * row_h + footer_h
         table_y1 = table_y0 + table_h
 
         bottom_y0 = table_y1
@@ -724,7 +785,7 @@ class AfficheRenderer:
 
         # Footer row (full width under rows)
         footer_y0 = rows_y0 + film_rows * row_h
-        footer_y1 = footer_y0 + FOOTER_H_PX
+        footer_y1 = footer_y0 + footer_h
         draw.rectangle([table_x0, footer_y0, table_x1, footer_y1], fill=(255, 255, 255))
         draw.line([table_x0, footer_y0, table_x1, footer_y0], fill=(210, 210, 210), width=2)
         draw_center_text((table_x0, footer_y0, table_x1, footer_y1), FOOTER_TEXT, self.font_colhdr_small, fill=(0, 0, 0), y_bias=0)
@@ -782,11 +843,17 @@ class App(ttk.Frame):
         self.master = master
         self.pack(fill="both", expand=True)
 
+        # DPI awareness (Windows) + UI scale
+        _enable_windows_dpi_awareness()
+        toplevel = self.winfo_toplevel()
+        scale = _get_scale_factor(toplevel)
+        _apply_tk_scaling(toplevel, scale)
+
         self.state_obj = AfficheState(
             start_date=dt.date.today().isoformat(),
             films=[FilmRow() for _ in range(12)]
         )
-        self.renderer = AfficheRenderer(ICONS_DIR)
+        self.renderer = AfficheRenderer(ICONS_DIR, ui_scale=scale)
 
         self.icon_files = self._scan_icons()
         self.icon_thumb_cache: Dict[str, ImageTk.PhotoImage] = {}
@@ -1439,6 +1506,7 @@ def open_window(parent):
 # Standalone run (optional)
 # -----------------------------
 if __name__ == "__main__":
+    _enable_windows_dpi_awareness()
     root = tk.Tk()
     root.title(APP_TITLE)
     root.geometry("1280x820")
