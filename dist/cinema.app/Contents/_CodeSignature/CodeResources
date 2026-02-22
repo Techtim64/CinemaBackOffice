@@ -770,67 +770,59 @@
 		</data>
 		<key>Resources/base_library.zip</key>
 		<data>
-		hkoylM2Hw88QGZHMLDMKix0yGoc=
-		</data>
-		<key>Resources/cairocffi/constants.py</key>
-		<data>
-		dLlxukm1pGD63e2OC/eBqu30O+I=
-		</data>
-		<key>Resources/cairosvg/VERSION</key>
-		<data>
-		iDPWuf9lc57EN9J1S5/IheICpVU=
+		zTS+4jiQaIoYxQ8poWFZ0kqb+7Q=
 		</data>
 		<key>Resources/dateutil/zoneinfo/dateutil-zoneinfo.tar.gz</key>
 		<data>
 		c+JCO8FU6iR/UDl+lpaYpwphJ6s=
 		</data>
-		<key>Resources/icons/10_hover.svg</key>
+		<key>Resources/icons/10_hover.png</key>
 		<data>
-		Tnxqr+kkfFKU3OCNhLORUDxXNoY=
+		aiwQHo/UtI3UwfSu+A4MaU2ApC8=
 		</data>
-		<key>Resources/icons/12_hover.svg</key>
+		<key>Resources/icons/12_hover.png</key>
 		<data>
-		+VY2FRObHcZYKb132VrksDZmb2Y=
+		Pqf73rEFZTlWka1CTax0txiFQFs=
 		</data>
-		<key>Resources/icons/16_hover.svg</key>
+		<key>Resources/icons/16_hover.png</key>
 		<data>
-		iFt/1/Xjwn9Hu/CnLBHj4+/rAgY=
+		usICMN8vDlKlFk1L1YVfQnfXS+8=
 		</data>
-		<key>Resources/icons/6_hover.svg</key>
+		<key>Resources/icons/6_hover.png</key>
 		<data>
-		pKzaRRSlgAgbxqdRx8eg3ZYCyXk=
+		ppWRfatZ0MchQ0hxbp1Ov3KfGYA=
 		</data>
-		<key>Resources/icons/al_hover.svg</key>
+		<key>Resources/icons/al_hover.png</key>
 		<data>
-		vg/smIRelFq6+GYMwNrAm68nDps=
+		mk60j9VRo7YWOKVusV8HTO/Lzuo=
 		</data>
-		<key>Resources/icons/angst_hover.svg</key>
+		<key>Resources/icons/angst_hover.png</key>
 		<data>
-		9Gk3iNz8sU+cFGQ5vYJEyJQa098=
+		OOtq5IfmQ9QYVEf1vnLqo1sLvb8=
 		</data>
-		<key>Resources/icons/discriminatie_hover.svg</key>
+		<key>Resources/icons/discriminatie_hover.png</key>
 		<data>
-		Z+xYM0wsAeZ4KPwN5So6LujSGCM=
+		B6EswQ+TVc11wpg8qyeQyRpJMbo=
 		</data>
-		<key>Resources/icons/drugs_hover.svg</key>
+		<key>Resources/icons/drugs_hover.png</key>
 		<data>
-		1vYCXihhmR9RiY2oTs1Dx4ElAnE=
+		dbw6Qs1hkMtNeeDdq8AoextxYSY=
 		</data>
-		<key>Resources/icons/geweld_hover.svg</key>
+		<key>Resources/icons/geweld_hover.png</key>
 		<data>
-		qttHZdOuPSoD5LD6P3edD5fhe7Q=
+		plTeDZnyUyBwkV3ziFbh9fmREoo=
 		</data>
-		<key>Resources/icons/goedgezienbienvu_18_grijs.svg</key>
+		<key>Resources/icons/goedgezienbienvu_18_grijs.png</key>
 		<data>
-		Vv7nesmUK6JEvcOkCPlsw2vct9Q=
+		Z/HcQrHbJvln4uYubxQBeRLWlXg=
 		</data>
-		<key>Resources/icons/groftaalgebruik_hover.svg</key>
+		<key>Resources/icons/groftaalgebruik_hover.png</key>
 		<data>
-		QAVdzJoNXlma3mTqnJH0/81LoIM=
+		SaV03sLcSW1/zCQGe6L0RW+kwNY=
 		</data>
-		<key>Resources/icons/seks_hover.svg</key>
+		<key>Resources/icons/seks_hover.png</key>
 		<data>
-		ctt9VIq8LlbJk6uOl83qeQbG1LU=
+		1cHmuinaUXqZR6HzNoxX4q+EgPY=
 		</data>
 		<key>Resources/icons/ui/film.png</key>
 		<data>
@@ -955,38 +947,6 @@
 		<key>Resources/pandas/io/formats/templates/typst.tpl</key>
 		<data>
 		owlVneVeVKusJxBmhTorRH51Gm0=
-		</data>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/INSTALLER</key>
-		<data>
-		rV3TPfqBqRUXGC9FOHnMBWqfEjA=
-		</data>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/METADATA</key>
-		<data>
-		HflQlohwzrimwMDwAiNnJ8R5DJA=
-		</data>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/RECORD</key>
-		<data>
-		9Ra2PfdbOFK7xysPj9YpJIyjE9c=
-		</data>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/REQUESTED</key>
-		<data>
-		2jmj7l5rSw0yVb/vlWAYkK/YBwk=
-		</data>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/WHEEL</key>
-		<data>
-		5yJNqX7e37nQI5z3yt526+OZd0M=
-		</data>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/licenses/LICENSE</key>
-		<data>
-		B9IxkQjSshu9R4ot7app4fZv9JQ=
-		</data>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/top_level.txt</key>
-		<data>
-		TmH5Jk3nR4O1kkJJvP4bBvF4ua0=
-		</data>
-		<key>Resources/setuptools/_vendor/jaraco/text/Lorem ipsum.txt</key>
-		<data>
-		eDY2ciZNnNP3LVwdNmXhZXsaUHE=
 		</data>
 		<key>Resources/tcl8/8.4/platform-1.0.19.tm</key>
 		<data>
@@ -1273,15 +1233,6 @@
 			<key>requirement</key>
 			<string>cdhash H"3bb921b1164df0768d86a621ed0f961c2d50a864"</string>
 		</dict>
-		<key>Frameworks/_cffi_backend.cpython-314-darwin.so</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			DCqlWc/aQ0DdHt5V08vvxDQZ9Es=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"0c2aa559cfda4340dd1ede55d3cbefc43419f44b"</string>
-		</dict>
 		<key>Frameworks/_mysql_connector.cpython-314-darwin.so</key>
 		<dict>
 			<key>cdhash</key>
@@ -1311,16 +1262,6 @@
 			<key>symlink</key>
 			<string>../Resources/base_library.zip</string>
 		</dict>
-		<key>Frameworks/cairocffi</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Resources/cairocffi</string>
-		</dict>
-		<key>Frameworks/cairosvg</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Resources/cairosvg</string>
-		</dict>
 		<key>Frameworks/charset_normalizer/md.cpython-314-darwin.so</key>
 		<dict>
 			<key>cdhash</key>
@@ -1349,46 +1290,10 @@
 			<key>symlink</key>
 			<string>../Resources/icons</string>
 		</dict>
-		<key>Frameworks/libX11.6.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			GOl3hR8YZMf+YwsWSEXwtW1fti0=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"18e977851f1864c7fe630b164845f0b56d5fb62d"</string>
-		</dict>
 		<key>Frameworks/libXau.6.dylib</key>
 		<dict>
 			<key>symlink</key>
 			<string>PIL/.dylibs/libXau.6.dylib</string>
-		</dict>
-		<key>Frameworks/libXdmcp.6.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			yKymBiEcbQgH5tiaQkFMQxg4Lig=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"c8aca606211c6d0807e6d89a42414c4318382e28"</string>
-		</dict>
-		<key>Frameworks/libXext.6.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			KucS8iusZGjJxSZIR3cjfH4WJp0=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"2ae712f22bac6468c9c526484777237c7e16269d"</string>
-		</dict>
-		<key>Frameworks/libXrender.1.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			9Uz3lIlebD/o4ZOG0PWZUiJ3OxM=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"f54cf794895e6c3fe8e19386d0f5995222773b13"</string>
 		</dict>
 		<key>Frameworks/libavif.16.3.0.dylib</key>
 		<dict>
@@ -1405,28 +1310,10 @@
 			<key>symlink</key>
 			<string>PIL/.dylibs/libbrotlidec.1.2.0.dylib</string>
 		</dict>
-		<key>Frameworks/libcairo.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			tkJvHL/0nup5pUqJdHi9g4Yr53w=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"b6426f1cbff49eea79a54a897478bd83862be77c"</string>
-		</dict>
 		<key>Frameworks/libcrypto.3.dylib</key>
 		<dict>
 			<key>symlink</key>
 			<string>mysql/vendor/libcrypto.3.dylib</string>
-		</dict>
-		<key>Frameworks/libfontconfig.1.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			9/Spb8CqsAwW1rDu/L4Y5U7HGEs=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"f7f4a96fc0aab00c16d6b0eefcbe18e54ec7184b"</string>
 		</dict>
 		<key>Frameworks/libfreetype.6.dylib</key>
 		<dict>
@@ -1457,15 +1344,6 @@
 		<dict>
 			<key>symlink</key>
 			<string>PIL/.dylibs/libopenjp2.2.5.4.dylib</string>
-		</dict>
-		<key>Frameworks/libpixman-1.0.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			ZO6/5QewraXREGMmc3S4dgHOG7w=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"64eebfe507b0ada5d11063267374b87601ce1bbc"</string>
 		</dict>
 		<key>Frameworks/libpng16.16.dylib</key>
 		<dict>
@@ -1502,33 +1380,10 @@
 			<key>symlink</key>
 			<string>PIL/.dylibs/libwebpmux.3.dylib</string>
 		</dict>
-		<key>Frameworks/libxcb-render.0.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			EFcllmRQO442Dk7611D2M0SGXdc=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"1057259664503b8e360e4efad750f63344865dd7"</string>
-		</dict>
-		<key>Frameworks/libxcb-shm.0.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			Tk9LcC5PXicyCE90Lcz7uQ4vHlM=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"4e4f4b702e4f5e2732084f742dccfbb90e2f1e53"</string>
-		</dict>
 		<key>Frameworks/libxcb.1.1.0.dylib</key>
 		<dict>
 			<key>symlink</key>
 			<string>PIL/.dylibs/libxcb.1.1.0.dylib</string>
-		</dict>
-		<key>Frameworks/libxcb.1.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>libxcb.1.1.0.dylib</string>
 		</dict>
 		<key>Frameworks/libz.1.3.1.zlib-ng.dylib</key>
 		<dict>
@@ -2576,15 +2431,6 @@
 			<key>requirement</key>
 			<string>cdhash H"ee1ff037d5c777e6942476ca159abe3adb12e62e"</string>
 		</dict>
-		<key>Frameworks/python3__dot__14/lib-dynload/syslog.cpython-314-darwin.so</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			RezHDEuaUDYtARhM8I7DI077jt4=
-			</data>
-			<key>requirement</key>
-			<string>cdhash H"45ecc70c4b9a50362d01184cf08ec3234efb8ede"</string>
-		</dict>
 		<key>Frameworks/python3__dot__14/lib-dynload/termios.cpython-314-darwin.so</key>
 		<dict>
 			<key>cdhash</key>
@@ -2611,11 +2457,6 @@
 			</data>
 			<key>requirement</key>
 			<string>cdhash H"acde284ace6bb104163d1cfd42577d5778d631d6"</string>
-		</dict>
-		<key>Frameworks/setuptools</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Resources/setuptools</string>
 		</dict>
 		<key>Frameworks/tcl8</key>
 		<dict>
@@ -2653,11 +2494,6 @@
 		<dict>
 			<key>symlink</key>
 			<string>../Frameworks/Tk</string>
-		</dict>
-		<key>Resources/_cffi_backend.cpython-314-darwin.so</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/_cffi_backend.cpython-314-darwin.so</string>
 		</dict>
 		<key>Resources/_mysql_connector.cpython-314-darwin.so</key>
 		<dict>
@@ -3998,21 +3834,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			CGxB+1NCv+9hFpKlwzvlgZCZDacvZ0EofEmg+iudme0=
-			</data>
-		</dict>
-		<key>Resources/cairocffi/constants.py</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			vMFlchltVPb+uZtkKb66VLbJWCY4BkfpJB177I//haE=
-			</data>
-		</dict>
-		<key>Resources/cairosvg/VERSION</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			9dszYwcglaT4ymGm7Ai3H4ANDsHgVwPzg2mnFLpEpg4=
+			AIAoptet1FwtVF3sBfQ+t5Jl63F1Uy+mL/GGffiE6AA=
 			</data>
 		</dict>
 		<key>Resources/charset_normalizer</key>
@@ -4027,88 +3849,88 @@
 			0+pS57bpaN4NiE3xKIGTWW+pW4A9tPkqGCeac5gARHU=
 			</data>
 		</dict>
-		<key>Resources/icons/10_hover.svg</key>
+		<key>Resources/icons/10_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			k4s9MI0NhxDyW/Lh/crOQlAbKDbbUXQeW18f2I4NGKc=
+			+vqphlGePDNX5XCkSO+Drd6bwca3q+5BK9suPsj38Lo=
 			</data>
 		</dict>
-		<key>Resources/icons/12_hover.svg</key>
+		<key>Resources/icons/12_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			0djq1U/c+CTEOSOBBE2XcJz1Mm/zEmzPrNh4WZCkZ78=
+			vNhrLTPF2ka22DlYJvFGinAWyfSuHiOWPJ8rt9H4nz0=
 			</data>
 		</dict>
-		<key>Resources/icons/16_hover.svg</key>
+		<key>Resources/icons/16_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			ZdELB5ffZ1er1/0fK/jwvPyzcK7RnncSMagrPA2VFvM=
+			HUNVX3bJ/1fkpPts2Q8DchAowrP5DtLnDZXjx7CNpn0=
 			</data>
 		</dict>
-		<key>Resources/icons/6_hover.svg</key>
+		<key>Resources/icons/6_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			1x926f6AeXQF5Uc5t8JjCh7fs/WmrA7A6+2MJpt+j1E=
+			OrtXHmwI30z7i6di148C8mvayjWR+5SMPrCekh4meGs=
 			</data>
 		</dict>
-		<key>Resources/icons/al_hover.svg</key>
+		<key>Resources/icons/al_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			ecWt3pUoZoXfs1HDy4+P9VrVcoS/MV3NTp9wmy1CgrU=
+			m55ISz6kUYmSRpgrdC4xkjXCwzw2V1qXqKVAkOgRC+M=
 			</data>
 		</dict>
-		<key>Resources/icons/angst_hover.svg</key>
+		<key>Resources/icons/angst_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			1sfAgX/jweCiSGHyIbHeFWN2SYCpNqI88ikpLX1MbB4=
+			kf2NxL/hJgaLpnwdVebjsxCJcPjQNju3Lep+ge1plbA=
 			</data>
 		</dict>
-		<key>Resources/icons/discriminatie_hover.svg</key>
+		<key>Resources/icons/discriminatie_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			WC0APz63zK7gHT2CE85m4cYuyGBa9Rt8S90tc37uIsQ=
+			Syr7SQUkjT8Pq/7MKarIFqOoiVRvdoEI/aj9ZwsG4e4=
 			</data>
 		</dict>
-		<key>Resources/icons/drugs_hover.svg</key>
+		<key>Resources/icons/drugs_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			qa04zd+PZlaDvpCAv5Gjp7dWGtpX7YNRg7tW2hZRxaI=
+			GvDBrW7RgwDyiZyixY0qBbksO0pSvUiaocMaSqupxX8=
 			</data>
 		</dict>
-		<key>Resources/icons/geweld_hover.svg</key>
+		<key>Resources/icons/geweld_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			dniHZ9jgA8xHAMXDj34cUyHJb4J/coFhbDC5CMeSITg=
+			iUZDPpwClCBnbB1iyMM+QXUJCRLcP/zw1TB8RuttpGI=
 			</data>
 		</dict>
-		<key>Resources/icons/goedgezienbienvu_18_grijs.svg</key>
+		<key>Resources/icons/goedgezienbienvu_18_grijs.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			fo6G/XFMKAspOVsxVUa89fspNPQHBcawZPvDZsTIt84=
+			SAQ8uOGPhkzdjqTq9uBbrTRannUmyGNDAgMc7+Kr4BE=
 			</data>
 		</dict>
-		<key>Resources/icons/groftaalgebruik_hover.svg</key>
+		<key>Resources/icons/groftaalgebruik_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			o/mL8ql/yhNYrRM8IkRBeLr6r3BpbOMfPpCC9/S3rVY=
+			nIxx07tpgPtZNSEp5zCePMBYl5Znnx1kVTyxSzzuIRc=
 			</data>
 		</dict>
-		<key>Resources/icons/seks_hover.svg</key>
+		<key>Resources/icons/seks_hover.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			dy0YfWER39UgQ+C4rlC+2qHs2IQDav5e2EosMQIbM/M=
+			bGhWU9wol9xR7IECqFIKLpgo8eBEeNW+2h/sX6DYT/M=
 			</data>
 		</dict>
 		<key>Resources/icons/ui/film.png</key>
@@ -4118,30 +3940,10 @@
 			/b4JSPpWM5SPbHITvxouTjBbcIEiST/qsxEAfORU6fQ=
 			</data>
 		</dict>
-		<key>Resources/libX11.6.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/libX11.6.dylib</string>
-		</dict>
 		<key>Resources/libXau.6.dylib</key>
 		<dict>
 			<key>symlink</key>
 			<string>PIL/.dylibs/libXau.6.dylib</string>
-		</dict>
-		<key>Resources/libXdmcp.6.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/libXdmcp.6.dylib</string>
-		</dict>
-		<key>Resources/libXext.6.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/libXext.6.dylib</string>
-		</dict>
-		<key>Resources/libXrender.1.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/libXrender.1.dylib</string>
 		</dict>
 		<key>Resources/libavif.16.3.0.dylib</key>
 		<dict>
@@ -4158,20 +3960,10 @@
 			<key>symlink</key>
 			<string>PIL/.dylibs/libbrotlidec.1.2.0.dylib</string>
 		</dict>
-		<key>Resources/libcairo.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/libcairo.dylib</string>
-		</dict>
 		<key>Resources/libcrypto.3.dylib</key>
 		<dict>
 			<key>symlink</key>
 			<string>mysql/vendor/libcrypto.3.dylib</string>
-		</dict>
-		<key>Resources/libfontconfig.1.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/libfontconfig.1.dylib</string>
 		</dict>
 		<key>Resources/libfreetype.6.dylib</key>
 		<dict>
@@ -4202,11 +3994,6 @@
 		<dict>
 			<key>symlink</key>
 			<string>PIL/.dylibs/libopenjp2.2.5.4.dylib</string>
-		</dict>
-		<key>Resources/libpixman-1.0.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/libpixman-1.0.dylib</string>
 		</dict>
 		<key>Resources/libpng16.16.dylib</key>
 		<dict>
@@ -4243,25 +4030,10 @@
 			<key>symlink</key>
 			<string>PIL/.dylibs/libwebpmux.3.dylib</string>
 		</dict>
-		<key>Resources/libxcb-render.0.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/libxcb-render.0.dylib</string>
-		</dict>
-		<key>Resources/libxcb-shm.0.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>../Frameworks/libxcb-shm.0.dylib</string>
-		</dict>
 		<key>Resources/libxcb.1.1.0.dylib</key>
 		<dict>
 			<key>symlink</key>
 			<string>PIL/.dylibs/libxcb.1.1.0.dylib</string>
-		</dict>
-		<key>Resources/libxcb.1.dylib</key>
-		<dict>
-			<key>symlink</key>
-			<string>libxcb.1.1.0.dylib</string>
 		</dict>
 		<key>Resources/libz.1.3.1.zlib-ng.dylib</key>
 		<dict>
@@ -4502,62 +4274,6 @@
 		<dict>
 			<key>symlink</key>
 			<string>../Frameworks/python3.14</string>
-		</dict>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/INSTALLER</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			5hhM4Q4mYTT9z6QB6PGpUAW81PGNFrYrdXMj4oM/6ak=
-			</data>
-		</dict>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/METADATA</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			o+OLnuQyYonUhkcE8w4pnudp4jCc6fSnXw3hpQrQo1Y=
-			</data>
-		</dict>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/RECORD</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			Uqa47g3hXPf9mWJfQ7l80uOUKshvFgVOqQ3kjmbyk1U=
-			</data>
-		</dict>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/REQUESTED</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
-			</data>
-		</dict>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/WHEEL</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			/zCd3N1l69ArxyTb8rzEoP9TpbYXkqRFSNOD5OuxnTs=
-			</data>
-		</dict>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/licenses/LICENSE</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			RYUC4S2Xu/ZEOGBqIARKqF6wX7CoqAe7NdvsJT/R/AQ=
-			</data>
-		</dict>
-		<key>Resources/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/top_level.txt</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			CO3fD9yylANiXkrMo4qHLV/mqXL2sC5JFKgt1yWAT+A=
-			</data>
-		</dict>
-		<key>Resources/setuptools/_vendor/jaraco/text/Lorem ipsum.txt</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			N/7c/79zxOufBY9HZ3yzMgOkNv+TkOTTio4BydrSjgs=
-			</data>
 		</dict>
 		<key>Resources/tcl8/8.4/platform-1.0.19.tm</key>
 		<dict>

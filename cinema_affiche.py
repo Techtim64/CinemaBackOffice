@@ -1,5 +1,6 @@
 import io
 import os
+import sys
 import json
 import math
 import mimetypes
@@ -32,20 +33,34 @@ else:
 
 
 # -----------------------------
+# Resource path helper (dev + PyInstaller)
+# -----------------------------
+def resource_path(*parts) -> Path:
+    """
+    Works in dev (python run) + PyInstaller (onedir/onefile).
+    """
+    if getattr(sys, "_MEIPASS", None):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).resolve().parent
+    return base.joinpath(*parts)
+
+
+# -----------------------------
 # Paths + logging
 # -----------------------------
-BASE_DIR = Path(__file__).resolve().parent
-ICONS_DIR = BASE_DIR / "icons"
-UI_ICONS_DIR = ICONS_DIR / "ui"
-FONTS_DIR = BASE_DIR / "fonts"
-LOGS_DIR = BASE_DIR / "logs"
-TMP_DIR = BASE_DIR / "tmp_db_images"
+BASE_DIR = resource_path()
+ICONS_DIR = resource_path("icons")
+UI_ICONS_DIR = resource_path("icons", "ui")
+FONTS_DIR = resource_path("fonts")
 
-LOGS_DIR.mkdir(exist_ok=True)
-ICONS_DIR.mkdir(exist_ok=True)
-UI_ICONS_DIR.mkdir(exist_ok=True)
-FONTS_DIR.mkdir(exist_ok=True)
-TMP_DIR.mkdir(exist_ok=True)
+# Writable dirs (NOT in app bundle)
+APPDATA_DIR = Path.home() / ".cinema_backoffice"
+LOGS_DIR = APPDATA_DIR / "logs"
+TMP_DIR = APPDATA_DIR / "tmp_db_images"
+
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     filename=str(LOGS_DIR / "cinema_affiche.log"),
@@ -208,34 +223,6 @@ def header_text(start: dt.date) -> str:
 def day_col_label(d: dt.date) -> str:
     day = DUTCH_DAYS_SHORT[d.weekday()]
     return f"{day}\n{d.day}\n{DUTCH_MONTHS[d.month]}"
-
-
-# -----------------------------
-# SVG + ImageMagick support for icons
-# -----------------------------
-def _try_svg_to_png_bytes(svg_path: Path, w: int, h: int) -> Optional[bytes]:
-    try:
-        import cairosvg
-    except Exception:
-        return None
-    try:
-        return cairosvg.svg2png(url=str(svg_path), output_width=w, output_height=h)
-    except Exception:
-        return None
-
-
-def rasterize_with_imagemagick_to_png(path: Path, size_px: int) -> Optional[bytes]:
-    cmds = [
-        ["magick", str(path), "-resize", f"{size_px}x{size_px}", "png:-"],
-        ["convert", str(path), "-resize", f"{size_px}x{size_px}", "png:-"],
-    ]
-    for cmd in cmds:
-        try:
-            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            return p.stdout
-        except Exception:
-            continue
-    return None
 
 
 # -----------------------------
@@ -504,7 +491,7 @@ class AfficheRenderer:
         dst_rgb.paste(tmp.convert("RGB"))
 
     def _load_icon(self, filename: str, size_px: int) -> Optional[Image.Image]:
-        """Icons for 'goed gezien' come from icons/ (root)."""
+        """Goed gezien icons: ONLY raster (png/jpg/webp)."""
         if not filename:
             return None
         key = f"{filename}|{size_px}"
@@ -521,30 +508,10 @@ class AfficheRenderer:
             self._icons_cache[key] = img
             return img
         except Exception:
-            pass
-
-        if path.suffix.lower() == ".svg":
-            png_bytes = _try_svg_to_png_bytes(path, size_px, size_px)
-            if png_bytes:
-                try:
-                    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-                    self._icons_cache[key] = img
-                    return img
-                except Exception:
-                    pass
-
-        png_bytes = rasterize_with_imagemagick_to_png(path, size_px)
-        if not png_bytes:
-            return None
-        try:
-            img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-            self._icons_cache[key] = img
-            return img
-        except Exception:
             return None
 
     def _load_ui_icon(self, filename: str, size_px: int) -> Optional[Image.Image]:
-        """UI icons come from icons/ui/ and must never affect 'goed gezien'."""
+        """UI icons: ONLY raster (png/jpg/webp)."""
         if not filename:
             return None
         key = f"UI::{filename}|{size_px}"
@@ -659,7 +626,7 @@ class AfficheRenderer:
 
         x = table_x0
 
-        # FILM header: UI icon + text (emoji-proof)
+        # FILM header: UI icon + text
         cell_outline(x, y_hdr2, x + film_w, y_hdr2 + header2_h)
 
         icon_size = max(18, min(42, header2_h - 18))
@@ -736,14 +703,14 @@ class AfficheRenderer:
             # GOED GEZIEN icons
             cell_outline(x, ry0, x + good_w, ry1)
             if film.good_icons:
-                icon_size = max(20, min(30, row_h - 14))
+                icon_size2 = max(20, min(30, row_h - 14))
                 ix = x + 4
-                iy = ry0 + (row_h - icon_size) // 2
+                iy = ry0 + (row_h - icon_size2) // 2
                 for icon_fn in film.good_icons[:4]:
-                    icon_img = self._load_icon(icon_fn, icon_size)
-                    if icon_img:
-                        self._alpha_blit(page, icon_img, ix, iy)
-                        ix += icon_size + 4
+                    icon_img2 = self._load_icon(icon_fn, icon_size2)
+                    if icon_img2:
+                        self._alpha_blit(page, icon_img2, ix, iy)
+                        ix += icon_size2 + 4
             x += good_w
 
             # 14 day cells
@@ -871,26 +838,19 @@ class App(ttk.Frame):
             pass
 
     def _scan_icons(self) -> List[str]:
-        """Only scan icons/ root for 'goed gezien' (no subfolders like icons/ui)."""
-        exts = {".png", ".jpg", ".jpeg", ".svg", ".mvg"}
-        files = [p.name for p in ICONS_DIR.iterdir() if p.is_file() and p.suffix.lower() in exts]
+        """Only scan icons/ root for 'goed gezien' (NO SVG)."""
+        exts = {".png", ".jpg", ".jpeg", ".webp"}
+        try:
+            files = [p.name for p in ICONS_DIR.iterdir() if p.is_file() and p.suffix.lower() in exts]
+        except Exception:
+            files = []
         files.sort()
         return files
 
     def _make_icon_thumb(self, filename: str, size: int) -> Optional[ImageTk.PhotoImage]:
         try:
             path = ICONS_DIR / filename
-            try:
-                img = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
-            except Exception:
-                if path.suffix.lower() == ".svg":
-                    png_bytes = _try_svg_to_png_bytes(path, size, size) or rasterize_with_imagemagick_to_png(path, size)
-                else:
-                    png_bytes = rasterize_with_imagemagick_to_png(path, size)
-                if not png_bytes:
-                    return None
-                img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-
+            img = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
             imgtk = ImageTk.PhotoImage(img)
             self.icon_thumb_cache[filename] = imgtk
             return imgtk
@@ -1043,8 +1003,6 @@ class App(ttk.Frame):
         for cv in self.cell_vars:
             cv.trace_add("write", lambda *_: self._schedule_preview())
 
-        # ❌ NIET MEER: self.protocol(...) (Frame heeft dit niet)
-        # cleanup bij start
         self._cleanup_tmp_db_images()
 
     def _build_schedule_widgets_once(self):
@@ -1103,8 +1061,8 @@ class App(ttk.Frame):
 
         for child in self.top_btn_frame.winfo_children():
             child.destroy()
-
         self.top_buttons.clear()
+
         ttk.Label(self.top_btn_frame, text="Top:").pack(side="left", padx=(0, 8))
         for i in range(top_cols):
             btn = ttk.Button(self.top_btn_frame, text=f"{i+1}", command=lambda k=i: self.import_poster("top", k))
@@ -1113,8 +1071,8 @@ class App(ttk.Frame):
 
         for child in self.bottom_btn_frame.winfo_children():
             child.destroy()
-
         self.bottom_buttons.clear()
+
         ttk.Label(self.bottom_btn_frame, text="Bottom:").pack(side="left", padx=(0, 8))
         rowA = ttk.Frame(self.bottom_btn_frame)
         rowB = ttk.Frame(self.bottom_btn_frame)
@@ -1474,7 +1432,6 @@ def open_window(parent):
     win.protocol("WM_DELETE_WINDOW", app._on_close)
 
     win.transient(parent)
-    # win.grab_set()  # zet aan als je modal wil
     return win
 
 
