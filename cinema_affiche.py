@@ -188,9 +188,8 @@ def _try_font_file(path: Path, size: int) -> Optional[ImageFont.FreeTypeFont]:
     except Exception:
         return None
 
-
 def load_modern_font(size: int) -> ImageFont.ImageFont:
-    # 1) project fonts
+    # 1) project fonts (mee in build als je fonts/ in datas zet)
     for fn in [
         "Inter-Regular.ttf",
         "Inter.ttf",
@@ -205,7 +204,7 @@ def load_modern_font(size: int) -> ImageFont.ImageFont:
             if f:
                 return f
 
-    # 2) macOS fonts
+    # 2) macOS fonts by name
     for name in [
         "SF Pro Display Regular",
         "SF Pro Text Regular",
@@ -216,13 +215,36 @@ def load_modern_font(size: int) -> ImageFont.ImageFont:
         if f:
             return f
 
-    # 3) fallback
+    # 3) Windows: load by FILE PATH from C:\Windows\Fonts (werkt ook in PyInstaller)
+    if sys.platform.startswith("win"):
+        win_fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+        for fn in [
+            "segoeui.ttf",       # Segoe UI
+            "segoeuib.ttf",      # Segoe UI Bold
+            "arial.ttf",         # Arial
+            "calibri.ttf",       # Calibri
+            "tahoma.ttf",        # Tahoma
+            "verdana.ttf",       # Verdana
+        ]:
+            p = win_fonts / fn
+            if p.exists():
+                f = _try_font_file(p, size)
+                if f:
+                    return f
+
+    # 4) Linux-ish fallback by name
     for name in ["DejaVuSans.ttf", "Arial.ttf"]:
         f = _try_font_by_name(name, size)
         if f:
             return f
 
-    return ImageFont.load_default()
+    # 5) Last resort: bitmap default (maar dan maken we hem groter om “mini text” te vermijden)
+    #    (PIL default is tiny on Windows)
+    try:
+        return ImageFont.load_default(size=max(14, int(size * 0.9)))
+    except Exception:
+        return ImageFont.load_default()
+
 
 
 @dataclass
