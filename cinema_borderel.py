@@ -8,12 +8,81 @@ import calendar
 import pandas as pd
 from mysql.connector import pooling
 
+import sys
+from pathlib import Path
+
+#helperblok Windows
+def resource_path(*parts) -> str:
+    """
+    Dev + PyInstaller path resolver.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return str(Path(base, *parts))
+    return str(Path(__file__).resolve().parent.joinpath(*parts))
+
+
+def set_window_icon(win):
+    """
+    Windows: .ico via iconbitmap
+    Fallback: PNG via iconphoto
+    """
+    try:
+        ico_path = resource_path("assets", "CinemaCentral.ico")
+        if sys.platform.startswith("win") and Path(ico_path).exists():
+            try:
+                win.iconbitmap(ico_path)
+                return
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        png_path = resource_path("assets", "CinemaCentral_1024.png")
+        if Path(png_path).exists():
+            img = tk.PhotoImage(file=png_path)
+            win.iconphoto(True, img)
+            win._app_icon_ref = img  # keep reference
+    except Exception:
+        pass
+
 # PDF (ReportLab)
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
+
+# Windows logo Helper
+def set_window_icon(win):
+    """
+    Sets window/taskbar icon for Tk windows.
+    - Windows: uses .ico via iconbitmap
+    - Fallback: uses PNG via iconphoto
+    Works in dev + PyInstaller (onedir/onefile) if you use resource_path().
+    """
+    try:
+        ico_path = resource_path("assets", "CinemaCentral.ico")
+        if sys.platform.startswith("win") and ico_path.exists():
+            try:
+                win.iconbitmap(str(ico_path))
+                return
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Fallback: PNG (works cross-platform)
+    try:
+        png_path = resource_path("assets", "CinemaCentral_1024.png")
+        if png_path.exists():
+            img = tk.PhotoImage(file=str(png_path))
+            win.iconphoto(True, img)
+            # keep reference
+            win._app_icon_ref = img
+    except Exception:
+        pass
 
 
 # =========================
@@ -2229,6 +2298,7 @@ def open_window(parent):
 
 def main():
     root = tk.Tk()
+    set_window_icon(root)
     SumUpFilmApp(root)
     root.mainloop()
 

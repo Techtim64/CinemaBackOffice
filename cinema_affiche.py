@@ -19,6 +19,37 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 
+
+# Windows logo Helper
+def set_window_icon(win):
+    """
+    Sets window/taskbar icon for Tk windows.
+    - Windows: uses .ico via iconbitmap
+    - Fallback: uses PNG via iconphoto
+    Works in dev + PyInstaller (onedir/onefile) if you use resource_path().
+    """
+    try:
+        ico_path = resource_path("assets", "CinemaCentral.ico")
+        if sys.platform.startswith("win") and ico_path.exists():
+            try:
+                win.iconbitmap(str(ico_path))
+                return
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Fallback: PNG (works cross-platform)
+    try:
+        png_path = resource_path("assets", "CinemaCentral_1024.png")
+        if png_path.exists():
+            img = tk.PhotoImage(file=str(png_path))
+            win.iconphoto(True, img)
+            # keep reference
+            win._app_icon_ref = img
+    except Exception:
+        pass
+
 # -----------------------------
 # Windows DPI scaling (fix small fonts)
 # -----------------------------
@@ -1514,6 +1545,7 @@ class App(ttk.Frame):
 # -----------------------------
 def open_window(parent):
     win = tk.Toplevel(parent)
+    set_window_icon(win)
     win.title(APP_TITLE)
     win.geometry("1280x820")
 

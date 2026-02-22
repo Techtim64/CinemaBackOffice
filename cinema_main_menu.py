@@ -5,6 +5,36 @@ from tkinter import ttk, messagebox
 from cinema_affiche import open_window as open_affiche_window
 from cinema_borderel import open_window as open_borderel_window
 
+# Windows logo Helper
+def set_window_icon(win):
+    """
+    Sets window/taskbar icon for Tk windows.
+    - Windows: uses .ico via iconbitmap
+    - Fallback: uses PNG via iconphoto
+    Works in dev + PyInstaller (onedir/onefile) if you use resource_path().
+    """
+    try:
+        ico_path = resource_path("assets", "CinemaCentral.ico")
+        if sys.platform.startswith("win") and ico_path.exists():
+            try:
+                win.iconbitmap(str(ico_path))
+                return
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Fallback: PNG (works cross-platform)
+    try:
+        png_path = resource_path("assets", "CinemaCentral_1024.png")
+        if png_path.exists():
+            img = tk.PhotoImage(file=str(png_path))
+            win.iconphoto(True, img)
+            # keep reference
+            win._app_icon_ref = img
+    except Exception:
+        pass
+
 
 def _mysql_config_from_env():
     return {
@@ -70,6 +100,7 @@ class MainMenu(tk.Tk):
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        set_window_icon(self)
 
     def _build_ui(self):
         outer = ttk.Frame(self, padding=18)
