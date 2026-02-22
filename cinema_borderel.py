@@ -1,5 +1,8 @@
 import os
 import re
+import sys
+from pathlib import Path
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from datetime import date, datetime, timedelta
@@ -8,45 +11,6 @@ import calendar
 import pandas as pd
 from mysql.connector import pooling
 
-import sys
-from pathlib import Path
-
-#helperblok Windows
-def resource_path(*parts) -> str:
-    """
-    Dev + PyInstaller path resolver.
-    """
-    base = getattr(sys, "_MEIPASS", None)
-    if base:
-        return str(Path(base, *parts))
-    return str(Path(__file__).resolve().parent.joinpath(*parts))
-
-
-def set_window_icon(win):
-    """
-    Windows: .ico via iconbitmap
-    Fallback: PNG via iconphoto
-    """
-    try:
-        ico_path = resource_path("assets", "CinemaCentral.ico")
-        if sys.platform.startswith("win") and Path(ico_path).exists():
-            try:
-                win.iconbitmap(ico_path)
-                return
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    try:
-        png_path = resource_path("assets", "CinemaCentral_1024.png")
-        if Path(png_path).exists():
-            img = tk.PhotoImage(file=png_path)
-            win.iconphoto(True, img)
-            win._app_icon_ref = img  # keep reference
-    except Exception:
-        pass
-
 # PDF (ReportLab)
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
@@ -54,37 +18,61 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
 
-# Windows logo Helper
+
+# =========================
+# PyInstaller resource + window icon helpers
+# =========================
+def resource_path(*parts) -> Path:
+    """Dev + PyInstaller path resolver (returns a Path)."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return Path(base, *parts)
+    return Path(__file__).resolve().parent.joinpath(*parts)
+
+
+def _set_windows_appusermodel_id(appid: str = "be.cinema.backoffice"):
+    """Helpt Windows taskbar icon (safe no-op op andere OS'en)."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(appid)
+    except Exception:
+        pass
+
+
 def set_window_icon(win):
     """
-    Sets window/taskbar icon for Tk windows.
-    - Windows: uses .ico via iconbitmap
-    - Fallback: uses PNG via iconphoto
-    Works in dev + PyInstaller (onedir/onefile) if you use resource_path().
+    Zet window/taskbar icon voor Tk windows.
+    - Windows: probeert .ico via iconbitmap
+    - Fallback: PNG via iconphoto (cross-platform)
+    Werkt in dev + PyInstaller (onedir/onefile).
     """
+    _set_windows_appusermodel_id()
+
+    # Windows .ico
     try:
         ico_path = resource_path("assets", "CinemaCentral.ico")
         if sys.platform.startswith("win") and ico_path.exists():
             try:
-                win.iconbitmap(str(ico_path))
-                return
+                win.iconbitmap(default=str(ico_path))
             except Exception:
-                pass
+                try:
+                    win.iconbitmap(str(ico_path))
+                except Exception:
+                    pass
     except Exception:
         pass
 
-    # Fallback: PNG (works cross-platform)
+    # PNG fallback
     try:
         png_path = resource_path("assets", "CinemaCentral_1024.png")
         if png_path.exists():
             img = tk.PhotoImage(file=str(png_path))
             win.iconphoto(True, img)
-            # keep reference
-            win._app_icon_ref = img
+            win._app_icon_ref = img  # keep reference
     except Exception:
         pass
-
-
 # =========================
 # CONFIG
 # =========================
@@ -1357,6 +1345,7 @@ class SumUpFilmApp:
         self.toplevel = self.root.winfo_toplevel()
         self.toplevel.title("Cinema BackOffice – SumUp Filmrapport")
         self.toplevel.geometry("1400x860")
+        set_window_icon(self.toplevel)
 
         self.unit_prices = {}
         self.item_meta = {}  # item_id -> dict(datum, speelweek_id, film_id, zaal_id, is_3d, source_file)
@@ -2291,6 +2280,7 @@ def open_window(parent):
     win = tk.Toplevel(parent)
     win.title("Cinema BackOffice – SumUp Filmrapport")
     win.geometry("1400x860")
+    set_window_icon(win)
     SumUpFilmApp(win)
     win.transient(parent)
     return win

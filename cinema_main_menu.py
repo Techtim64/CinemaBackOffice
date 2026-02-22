@@ -1,9 +1,22 @@
 import os
+import sys
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
 
 from cinema_affiche import open_window as open_affiche_window
 from cinema_borderel import open_window as open_borderel_window
+
+
+def resource_path(*parts) -> Path:
+    """
+    Dev + PyInstaller path resolver.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return Path(base, *parts)
+    return Path(__file__).resolve().parent.joinpath(*parts)
+
 
 # Windows logo Helper
 def set_window_icon(win):
@@ -11,8 +24,9 @@ def set_window_icon(win):
     Sets window/taskbar icon for Tk windows.
     - Windows: uses .ico via iconbitmap
     - Fallback: uses PNG via iconphoto
-    Works in dev + PyInstaller (onedir/onefile) if you use resource_path().
+    Works in dev + PyInstaller (onedir/onefile).
     """
+    # Windows: prefer .ico
     try:
         ico_path = resource_path("assets", "CinemaCentral.ico")
         if sys.platform.startswith("win") and ico_path.exists():
@@ -24,14 +38,13 @@ def set_window_icon(win):
     except Exception:
         pass
 
-    # Fallback: PNG (works cross-platform)
+    # Fallback: PNG (cross-platform)
     try:
         png_path = resource_path("assets", "CinemaCentral_1024.png")
         if png_path.exists():
             img = tk.PhotoImage(file=str(png_path))
             win.iconphoto(True, img)
-            # keep reference
-            win._app_icon_ref = img
+            win._app_icon_ref = img  # keep reference
     except Exception:
         pass
 
@@ -73,7 +86,6 @@ def _check_mysql_connection(timeout_sec: int = 3) -> tuple[bool, str]:
             cn.close()
         return True, ""
     except Exception as e:
-        # Nette, duidelijke melding
         msg = (
             "Kan geen verbinding maken met de Cinema-database.\n\n"
             f"Server: {cfg['host']}:{cfg['port']}\n"
@@ -100,6 +112,8 @@ class MainMenu(tk.Tk):
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # ✅ set window icon (prevents the “feather” icon on Windows)
         set_window_icon(self)
 
     def _build_ui(self):
@@ -159,6 +173,11 @@ class MainMenu(tk.Tk):
 
         try:
             self.affiche_win = open_affiche_window(self)
+            # ✅ icon on child window too (if affiche.open_window doesn't do it)
+            try:
+                set_window_icon(self.affiche_win)
+            except Exception:
+                pass
             self.status.set("Affiches geopend.")
         except Exception as e:
             messagebox.showerror("Fout", f"Kon Affiches niet openen:\n\n{e}", parent=self)
@@ -174,6 +193,11 @@ class MainMenu(tk.Tk):
 
         try:
             self.borderel_win = open_borderel_window(self)
+            # ✅ icon on child window too (this fixes the “feather” if borderel forgets it)
+            try:
+                set_window_icon(self.borderel_win)
+            except Exception:
+                pass
             self.status.set("Borderellen geopend.")
         except Exception as e:
             messagebox.showerror("Fout", f"Kon Borderellen niet openen:\n\n{e}", parent=self)
