@@ -226,36 +226,6 @@ def day_col_label(d: dt.date) -> str:
 
 
 # -----------------------------
-# SVG + ImageMagick support for icons
-# -----------------------------
-def _try_svg_to_png_bytes(svg_path: Path, w: int, h: int) -> Optional[bytes]:
-    try:
-        import cairosvg
-    except Exception as e:
-        logging.warning(f"cairosvg import failed: {e}")
-        return None
-    try:
-        return cairosvg.svg2png(url=str(svg_path), output_width=w, output_height=h)
-    except Exception as e:
-        logging.warning(f"cairosvg svg2png failed for {svg_path}: {e}")
-        return None
-
-
-def rasterize_with_imagemagick_to_png(path: Path, size_px: int) -> Optional[bytes]:
-    cmds = [
-        ["magick", str(path), "-resize", f"{size_px}x{size_px}", "png:-"],
-        ["convert", str(path), "-resize", f"{size_px}x{size_px}", "png:-"],
-    ]
-    for cmd in cmds:
-        try:
-            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            return p.stdout
-        except Exception:
-            continue
-    return None
-
-
-# -----------------------------
 # MySQL storage layer
 # -----------------------------
 class MySQLStore:
@@ -521,13 +491,7 @@ class AfficheRenderer:
         dst_rgb.paste(tmp.convert("RGB"))
 
     def _load_icon(self, filename: str, size_px: int) -> Optional[Image.Image]:
-        """
-        Icons for 'goed gezien' come from icons/ (root).
-        SVG support:
-          - try cairosvg
-          - else try ImageMagick
-          - else try PNG fallback next to SVG (same basename)
-        """
+        """Goed gezien icons: ONLY raster (png/jpg/webp)."""
         if not filename:
             return None
         key = f"{filename}|{size_px}"
@@ -538,52 +502,16 @@ class AfficheRenderer:
         if not path.exists() or not path.is_file():
             return None
 
-        # 1) direct load (png/jpg/etc)
         try:
             img = Image.open(path).convert("RGBA")
             img = img.resize((size_px, size_px), Image.LANCZOS)
             self._icons_cache[key] = img
             return img
         except Exception:
-            pass
-
-        # 2) svg render
-        if path.suffix.lower() == ".svg":
-            png_bytes = _try_svg_to_png_bytes(path, size_px, size_px)
-            if png_bytes:
-                try:
-                    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-                    img = img.resize((size_px, size_px), Image.LANCZOS)
-                    self._icons_cache[key] = img
-                    return img
-                except Exception:
-                    pass
-
-            png_bytes = rasterize_with_imagemagick_to_png(path, size_px)
-            if png_bytes:
-                try:
-                    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-                    img = img.resize((size_px, size_px), Image.LANCZOS)
-                    self._icons_cache[key] = img
-                    return img
-                except Exception:
-                    pass
-
-            # 3) PNG fallback next to SVG
-            fallback_png = path.with_suffix(".png")
-            if fallback_png.exists():
-                try:
-                    img = Image.open(fallback_png).convert("RGBA")
-                    img = img.resize((size_px, size_px), Image.LANCZOS)
-                    self._icons_cache[key] = img
-                    return img
-                except Exception:
-                    pass
-
-        return None
+            return None
 
     def _load_ui_icon(self, filename: str, size_px: int) -> Optional[Image.Image]:
-        """UI icons come from icons/ui/ and must never affect 'goed gezien'."""
+        """UI icons: ONLY raster (png/jpg/webp)."""
         if not filename:
             return None
         key = f"UI::{filename}|{size_px}"
@@ -698,7 +626,7 @@ class AfficheRenderer:
 
         x = table_x0
 
-        # FILM header: UI icon + text (emoji-proof)
+        # FILM header: UI icon + text
         cell_outline(x, y_hdr2, x + film_w, y_hdr2 + header2_h)
 
         icon_size = max(18, min(42, header2_h - 18))
@@ -910,8 +838,8 @@ class App(ttk.Frame):
             pass
 
     def _scan_icons(self) -> List[str]:
-        """Only scan icons/ root for 'goed gezien' (no subfolders like icons/ui)."""
-        exts = {".png", ".jpg", ".jpeg", ".svg", ".mvg"}
+        """Only scan icons/ root for 'goed gezien' (NO SVG)."""
+        exts = {".png", ".jpg", ".jpeg", ".webp"}
         try:
             files = [p.name for p in ICONS_DIR.iterdir() if p.is_file() and p.suffix.lower() in exts]
         except Exception:
@@ -922,26 +850,7 @@ class App(ttk.Frame):
     def _make_icon_thumb(self, filename: str, size: int) -> Optional[ImageTk.PhotoImage]:
         try:
             path = ICONS_DIR / filename
-            try:
-                img = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
-            except Exception:
-                if path.suffix.lower() == ".svg":
-                    png_bytes = _try_svg_to_png_bytes(path, size, size) or rasterize_with_imagemagick_to_png(path, size)
-                    if not png_bytes:
-                        # png fallback next to svg
-                        fallback_png = path.with_suffix(".png")
-                        if fallback_png.exists():
-                            img = Image.open(fallback_png).convert("RGBA").resize((size, size), Image.LANCZOS)
-                        else:
-                            return None
-                    else:
-                        img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-                else:
-                    png_bytes = rasterize_with_imagemagick_to_png(path, size)
-                    if not png_bytes:
-                        return None
-                    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-
+            img = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
             imgtk = ImageTk.PhotoImage(img)
             self.icon_thumb_cache[filename] = imgtk
             return imgtk
@@ -1523,7 +1432,6 @@ def open_window(parent):
     win.protocol("WM_DELETE_WINDOW", app._on_close)
 
     win.transient(parent)
-    # win.grab_set()  # zet aan als je modal wil
     return win
 
 
