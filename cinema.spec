@@ -1,14 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+from PyInstaller.utils.hooks import collect_submodules
 
 BASE_DIR = SPECPATH
 
 def add_file(rel_path, dest_dir):
     src = os.path.join(BASE_DIR, rel_path)
-    if not os.path.isfile(src):
+    if os.path.isfile(src):
+        DATAS.append((src, dest_dir))
+    else:
         print(f"[WARN] missing file: {src}")
-        return
-    DATAS.append((src, dest_dir))
 
 def add_folder(rel_folder):
     folder = os.path.join(BASE_DIR, rel_folder)
@@ -18,25 +19,20 @@ def add_folder(rel_folder):
     for root, _dirs, files in os.walk(folder):
         for fn in files:
             src = os.path.join(root, fn)
-            dest = os.path.relpath(root, BASE_DIR)   # bv icons/ui
+            dest = os.path.relpath(root, BASE_DIR)  # icons/ui, fonts, ...
             DATAS.append((src, dest))
 
-# ✅ bouw datas in aparte lijst
+hiddenimports = ['mysql.connector.plugins.caching_sha2_password']
+hiddenimports += collect_submodules('mysql.connector.plugins')
+
+# ✅ extra zekerheid: menu importeert deze, maar we pinnen toch
+hiddenimports += ['cinema_affiche', 'cinema_borderel']
+
 DATAS = []
 add_file("assets/logo.png", "assets")
 add_file("assets/CinemaCentral.icns", "assets")
 add_folder("icons")
 add_folder("fonts")
-
-# ✅ harde check: elk datas item moet EXACT (src, dest) zijn
-for i, item in enumerate(DATAS):
-    if not (isinstance(item, tuple) and len(item) == 2):
-        raise SystemExit(f"[FATAL] datas[{i}] is not a (src,dest) tuple: {repr(item)}")
-
-from PyInstaller.utils.hooks import collect_submodules
-
-hiddenimports = ['mysql.connector.plugins.caching_sha2_password']
-hiddenimports += collect_submodules('mysql.connector.plugins')
 
 a = Analysis(
     [os.path.join(BASE_DIR, 'cinema_main_menu.py')],

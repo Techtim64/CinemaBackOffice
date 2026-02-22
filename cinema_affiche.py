@@ -1,5 +1,6 @@
 import io
 import os
+import sys
 import json
 import math
 import mimetypes
@@ -32,20 +33,34 @@ else:
 
 
 # -----------------------------
+# Resource path helper (dev + PyInstaller)
+# -----------------------------
+def resource_path(*parts) -> Path:
+    """
+    Works in dev (python run) + PyInstaller (onedir/onefile).
+    """
+    if getattr(sys, "_MEIPASS", None):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).resolve().parent
+    return base.joinpath(*parts)
+
+
+# -----------------------------
 # Paths + logging
 # -----------------------------
-BASE_DIR = Path(__file__).resolve().parent
-ICONS_DIR = BASE_DIR / "icons"
-UI_ICONS_DIR = ICONS_DIR / "ui"
-FONTS_DIR = BASE_DIR / "fonts"
-LOGS_DIR = BASE_DIR / "logs"
-TMP_DIR = BASE_DIR / "tmp_db_images"
+BASE_DIR = resource_path()
+ICONS_DIR = resource_path("icons")
+UI_ICONS_DIR = resource_path("icons", "ui")
+FONTS_DIR = resource_path("fonts")
 
-LOGS_DIR.mkdir(exist_ok=True)
-ICONS_DIR.mkdir(exist_ok=True)
-UI_ICONS_DIR.mkdir(exist_ok=True)
-FONTS_DIR.mkdir(exist_ok=True)
-TMP_DIR.mkdir(exist_ok=True)
+# Writable dirs (NOT in app bundle)
+APPDATA_DIR = Path.home() / ".cinema_backoffice"
+LOGS_DIR = APPDATA_DIR / "logs"
+TMP_DIR = APPDATA_DIR / "tmp_db_images"
+
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     filename=str(LOGS_DIR / "cinema_affiche.log"),
@@ -216,11 +231,13 @@ def day_col_label(d: dt.date) -> str:
 def _try_svg_to_png_bytes(svg_path: Path, w: int, h: int) -> Optional[bytes]:
     try:
         import cairosvg
-    except Exception:
+    except Exception as e:
+        logging.warning(f"cairosvg import failed: {e}")
         return None
     try:
         return cairosvg.svg2png(url=str(svg_path), output_width=w, output_height=h)
-    except Exception:
+    except Exception as e:
+        logging.warning(f"cairosvg svg2png failed for {svg_path}: {e}")
         return None
 
 
@@ -504,7 +521,13 @@ class AfficheRenderer:
         dst_rgb.paste(tmp.convert("RGB"))
 
     def _load_icon(self, filename: str, size_px: int) -> Optional[Image.Image]:
-        """Icons for 'goed gezien' come from icons/ (root)."""
+        """
+        Icons for 'goed gezien' come from icons/ (root).
+        SVG support:
+          - try cairosvg
+          - else try ImageMagick
+          - else try PNG fallback next to SVG (same basename)
+        """
         if not filename:
             return None
         key = f"{filename}|{size_px}"
@@ -515,6 +538,7 @@ class AfficheRenderer:
         if not path.exists() or not path.is_file():
             return None
 
+        # 1) direct load (png/jpg/etc)
         try:
             img = Image.open(path).convert("RGBA")
             img = img.resize((size_px, size_px), Image.LANCZOS)
@@ -523,25 +547,40 @@ class AfficheRenderer:
         except Exception:
             pass
 
+        # 2) svg render
         if path.suffix.lower() == ".svg":
             png_bytes = _try_svg_to_png_bytes(path, size_px, size_px)
             if png_bytes:
                 try:
                     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+                    img = img.resize((size_px, size_px), Image.LANCZOS)
                     self._icons_cache[key] = img
                     return img
                 except Exception:
                     pass
 
-        png_bytes = rasterize_with_imagemagick_to_png(path, size_px)
-        if not png_bytes:
-            return None
-        try:
-            img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-            self._icons_cache[key] = img
-            return img
-        except Exception:
-            return None
+            png_bytes = rasterize_with_imagemagick_to_png(path, size_px)
+            if png_bytes:
+                try:
+                    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+                    img = img.resize((size_px, size_px), Image.LANCZOS)
+                    self._icons_cache[key] = img
+                    return img
+                except Exception:
+                    pass
+
+            # 3) PNG fallback next to SVG
+            fallback_png = path.with_suffix(".png")
+            if fallback_png.exists():
+                try:
+                    img = Image.open(fallback_png).convert("RGBA")
+                    img = img.resize((size_px, size_px), Image.LANCZOS)
+                    self._icons_cache[key] = img
+                    return img
+                except Exception:
+                    pass
+
+        return None
 
     def _load_ui_icon(self, filename: str, size_px: int) -> Optional[Image.Image]:
         """UI icons come from icons/ui/ and must never affect 'goed gezien'."""
@@ -736,14 +775,14 @@ class AfficheRenderer:
             # GOED GEZIEN icons
             cell_outline(x, ry0, x + good_w, ry1)
             if film.good_icons:
-                icon_size = max(20, min(30, row_h - 14))
+                icon_size2 = max(20, min(30, row_h - 14))
                 ix = x + 4
-                iy = ry0 + (row_h - icon_size) // 2
+                iy = ry0 + (row_h - icon_size2) // 2
                 for icon_fn in film.good_icons[:4]:
-                    icon_img = self._load_icon(icon_fn, icon_size)
-                    if icon_img:
-                        self._alpha_blit(page, icon_img, ix, iy)
-                        ix += icon_size + 4
+                    icon_img2 = self._load_icon(icon_fn, icon_size2)
+                    if icon_img2:
+                        self._alpha_blit(page, icon_img2, ix, iy)
+                        ix += icon_size2 + 4
             x += good_w
 
             # 14 day cells
@@ -873,7 +912,10 @@ class App(ttk.Frame):
     def _scan_icons(self) -> List[str]:
         """Only scan icons/ root for 'goed gezien' (no subfolders like icons/ui)."""
         exts = {".png", ".jpg", ".jpeg", ".svg", ".mvg"}
-        files = [p.name for p in ICONS_DIR.iterdir() if p.is_file() and p.suffix.lower() in exts]
+        try:
+            files = [p.name for p in ICONS_DIR.iterdir() if p.is_file() and p.suffix.lower() in exts]
+        except Exception:
+            files = []
         files.sort()
         return files
 
@@ -885,11 +927,20 @@ class App(ttk.Frame):
             except Exception:
                 if path.suffix.lower() == ".svg":
                     png_bytes = _try_svg_to_png_bytes(path, size, size) or rasterize_with_imagemagick_to_png(path, size)
+                    if not png_bytes:
+                        # png fallback next to svg
+                        fallback_png = path.with_suffix(".png")
+                        if fallback_png.exists():
+                            img = Image.open(fallback_png).convert("RGBA").resize((size, size), Image.LANCZOS)
+                        else:
+                            return None
+                    else:
+                        img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
                 else:
                     png_bytes = rasterize_with_imagemagick_to_png(path, size)
-                if not png_bytes:
-                    return None
-                img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+                    if not png_bytes:
+                        return None
+                    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
 
             imgtk = ImageTk.PhotoImage(img)
             self.icon_thumb_cache[filename] = imgtk
@@ -1043,8 +1094,6 @@ class App(ttk.Frame):
         for cv in self.cell_vars:
             cv.trace_add("write", lambda *_: self._schedule_preview())
 
-        # ❌ NIET MEER: self.protocol(...) (Frame heeft dit niet)
-        # cleanup bij start
         self._cleanup_tmp_db_images()
 
     def _build_schedule_widgets_once(self):
@@ -1103,8 +1152,8 @@ class App(ttk.Frame):
 
         for child in self.top_btn_frame.winfo_children():
             child.destroy()
-
         self.top_buttons.clear()
+
         ttk.Label(self.top_btn_frame, text="Top:").pack(side="left", padx=(0, 8))
         for i in range(top_cols):
             btn = ttk.Button(self.top_btn_frame, text=f"{i+1}", command=lambda k=i: self.import_poster("top", k))
@@ -1113,8 +1162,8 @@ class App(ttk.Frame):
 
         for child in self.bottom_btn_frame.winfo_children():
             child.destroy()
-
         self.bottom_buttons.clear()
+
         ttk.Label(self.bottom_btn_frame, text="Bottom:").pack(side="left", padx=(0, 8))
         rowA = ttk.Frame(self.bottom_btn_frame)
         rowB = ttk.Frame(self.bottom_btn_frame)
